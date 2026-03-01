@@ -119,6 +119,21 @@ def _init_schema(conn: sqlite3.Connection):
         )
     """)
 
+    # Journal entries (DB mirror of file-based journals, for FTS)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS journal_entries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            agent TEXT NOT NULL,
+            ts TEXT NOT NULL,
+            status TEXT DEFAULT '',
+            task TEXT DEFAULT '',
+            finding TEXT DEFAULT ''
+        )
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_journal_agent ON journal_entries(agent)
+    """)
+
     # Full-text search index over handoffs
     conn.execute("""
         CREATE VIRTUAL TABLE IF NOT EXISTS handoffs_fts USING fts5(
@@ -127,11 +142,26 @@ def _init_schema(conn: sqlite3.Connection):
         )
     """)
 
-    # Triggers to keep FTS in sync with handoffs
+    # FTS index over journal entries
+    conn.execute("""
+        CREATE VIRTUAL TABLE IF NOT EXISTS journal_fts USING fts5(
+            task, finding,
+            content='journal_entries', content_rowid='id'
+        )
+    """)
+
+    # Triggers to keep FTS in sync
     conn.execute("""
         CREATE TRIGGER IF NOT EXISTS handoffs_ai AFTER INSERT ON handoffs BEGIN
             INSERT INTO handoffs_fts(rowid, summary, accomplished, pending, discoveries)
             VALUES (new.id, new.summary, new.accomplished, new.pending, new.discoveries);
+        END
+    """)
+
+    conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS journal_ai AFTER INSERT ON journal_entries BEGIN
+            INSERT INTO journal_fts(rowid, task, finding)
+            VALUES (new.id, new.task, new.finding);
         END
     """)
 

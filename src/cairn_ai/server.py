@@ -601,16 +601,20 @@ def observe_principal(observations: str, agent: str = "default") -> str:
 
 @mcp.tool()
 def search_memory(query: str, agent: str = "", limit: int = 10) -> str:
-    """Full-text search across all handoffs. Finds past work, decisions, and discoveries.
+    """Full-text search across all handoffs and journal entries.
+    Finds past work, decisions, discoveries, and status updates.
     Optionally filter by agent name. Returns ranked results with timestamps.
 
     Args:
         query: What to search for (e.g. "authentication bug", "database migration")
-        agent: Filter to a specific agent's handoffs (optional)
+        agent: Filter to a specific agent's results (optional)
         limit: Max results to return (default 10)
     """
     conn = get_db()
+    lines = []
+    total = 0
 
+    # Search handoffs
     if agent:
         agent = agent.lower()
         rows = conn.execute(
@@ -634,16 +638,37 @@ def search_memory(query: str, agent: str = "", limit: int = 10) -> str:
             (query, limit),
         ).fetchall()
 
+    # Search journal entries
+    journal_limit = max(1, limit - len(rows))
+    if agent:
+        jrows = conn.execute(
+            """SELECT j.agent, j.ts, j.status, j.task, j.finding
+               FROM journal_fts f
+               JOIN journal_entries j ON j.id = f.rowid
+               WHERE journal_fts MATCH ?
+               AND j.agent = ?
+               ORDER BY rank
+               LIMIT ?""",
+            (query, agent, journal_limit),
+        ).fetchall()
+    else:
+        jrows = conn.execute(
+            """SELECT j.agent, j.ts, j.status, j.task, j.finding
+               FROM journal_fts f
+               JOIN journal_entries j ON j.id = f.rowid
+               WHERE journal_fts MATCH ?
+               ORDER BY rank
+               LIMIT ?""",
+            (query, journal_limit),
+        ).fetchall()
+
     conn.close()
 
-    if not rows:
-        # Fall back to journal file search
-        journal_results = _search_journals(query, agent, limit)
-        if journal_results:
-            return journal_results
+    if not rows and not jrows:
         return f"No results for '{query}'."
 
-    lines = [f"Found {len(rows)} result(s) for '{query}':\n"]
+    total = len(rows) + len(jrows)
+    lines = [f"Found {total} result(s) for '{query}':\n"]
     for r in rows:
         lines.append(f"--- {r['agent']} | {r['ts'][:16]} ---")
         lines.append(f"  Summary: {r['summary'][:200]}")
@@ -654,6 +679,16 @@ def search_memory(query: str, agent: str = "", limit: int = 10) -> str:
         if r["discoveries"]:
             lines.append(f"  Discoveries: {r['discoveries'][:150]}")
         lines.append("")
+
+    if jrows:
+        lines.append("--- Journal entries ---")
+        for j in jrows:
+            line = f"  [{j['agent']} {j['ts'][:16]}]"
+            if j["task"]:
+                line += f" Task: {j['task'][:150]}"
+            if j["finding"]:
+                line += f" | Finding: {j['finding'][:150]}"
+            lines.append(line)
 
     return "\n".join(lines)
 
