@@ -439,18 +439,15 @@ every session.*
 
 
 def _configure_mcp_settings(persist_path: Path):
-    """Add persist MCP server to Claude Code project settings."""
+    """Add cairn MCP server to .mcp.json (Claude Code's project-level MCP config)."""
     import shutil
 
-    # Try project-level settings first
-    settings_dir = Path(".claude")
-    settings_dir.mkdir(exist_ok=True)
-    settings_file = settings_dir / "settings.json"
+    mcp_file = Path(".mcp.json")
 
     settings = {}
-    if settings_file.exists():
+    if mcp_file.exists():
         try:
-            settings = json.loads(settings_file.read_text())
+            settings = json.loads(mcp_file.read_text())
         except (json.JSONDecodeError, IOError):
             pass
 
@@ -467,16 +464,33 @@ def _configure_mcp_settings(persist_path: Path):
             "args": ["serve"],
         }
         settings["mcpServers"] = mcp_servers
-        settings_file.write_text(json.dumps(settings, indent=2))
-        click.echo(f"  Added MCP server config to .claude/settings.json ({cairn_path})")
+        mcp_file.write_text(json.dumps(settings, indent=2) + "\n")
+        click.echo(f"  Added MCP server config to .mcp.json ({cairn_path})")
     elif old_command != cairn_path:
         # Update stale path (e.g. bare "cairn" → full venv path after reinstall)
         mcp_servers["cairn"]["command"] = cairn_path
         settings["mcpServers"] = mcp_servers
-        settings_file.write_text(json.dumps(settings, indent=2))
+        mcp_file.write_text(json.dumps(settings, indent=2) + "\n")
         click.echo(f"  Updated MCP server path: {old_command} → {cairn_path}")
     else:
         click.echo("  MCP server already configured (skipped)")
+
+    # Clean up old location if it exists and only has mcpServers
+    old_settings = Path(".claude/settings.json")
+    if old_settings.exists():
+        try:
+            old = json.loads(old_settings.read_text())
+            if "mcpServers" in old and "cairn" in old.get("mcpServers", {}):
+                del old["mcpServers"]["cairn"]
+                if not old["mcpServers"]:
+                    del old["mcpServers"]
+                if old:
+                    old_settings.write_text(json.dumps(old, indent=2) + "\n")
+                else:
+                    old_settings.unlink()
+                click.echo("  Migrated MCP config from .claude/settings.json → .mcp.json")
+        except (json.JSONDecodeError, IOError, KeyError):
+            pass
 
 
 if __name__ == "__main__":
