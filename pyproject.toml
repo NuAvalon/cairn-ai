@@ -1,0 +1,44 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "claude-persist"
+version = "0.1.0"
+description = "Persistent memory for Claude Code agents — survive compaction, recover from crashes, maintain identity across sessions."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [
+    { name = "claude-persist contributors" },
+]
+keywords = ["claude", "claude-code", "mcp", "memory", "agents", "persistence"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries",
+]
+dependencies = [
+    "mcp>=1.0",
+    "click>=8.0",
+]
+
+[project.scripts]
+claude-persist = "claude_persist.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/claude-persist/claude-persist"
+Documentation = "https://claude-persist.dev"
+Issues = "https://github.com/claude-persist/claude-persist/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/claude_persist"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
