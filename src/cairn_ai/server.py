@@ -2,7 +2,7 @@
 
 Tools: ping, open_session, set_status, write_handoff, read_journal,
        recover_context, check_session_health, mark_compacted,
-       read_principal, observe_principal, search_memory
+       read_principal, observe_principal, search_memory, recall
 """
 
 import re
@@ -689,6 +689,73 @@ def search_memory(query: str, agent: str = "", limit: int = 10) -> str:
             if j["finding"]:
                 line += f" | Finding: {j['finding'][:150]}"
             lines.append(line)
+
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def recall(query: str, agent: str = "", tags: str = "", limit: int = 10) -> str:
+    """Search the knowledge base — extracted findings, ingested transcripts, archived discoveries.
+    This is your long-term memory. Use it to find past decisions, discoveries, and learnings.
+
+    Args:
+        query: What to search for (e.g. "authentication", "the bug we fixed last week")
+        agent: Filter to a specific agent's knowledge (optional)
+        tags: Filter by tags, comma-separated (e.g. "discovery,commit")
+        limit: Max results to return (default 10)
+    """
+    conn = get_db()
+    lines = []
+
+    # FTS search
+    if agent:
+        agent = agent.lower()
+    try:
+        if agent:
+            rows = conn.execute(
+                """SELECT k.agent, k.ts, k.title, k.content, k.tags, k.source
+                   FROM knowledge_fts f
+                   JOIN knowledge k ON k.id = f.rowid
+                   WHERE knowledge_fts MATCH ?
+                   AND k.agent = ?
+                   ORDER BY rank
+                   LIMIT ?""",
+                (query, agent, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """SELECT k.agent, k.ts, k.title, k.content, k.tags, k.source
+                   FROM knowledge_fts f
+                   JOIN knowledge k ON k.id = f.rowid
+                   WHERE knowledge_fts MATCH ?
+                   ORDER BY rank
+                   LIMIT ?""",
+                (query, limit),
+            ).fetchall()
+    except Exception:
+        rows = []
+
+    # Optional tag filter
+    if tags and rows:
+        tag_set = {t.strip().lower() for t in tags.split(",")}
+        rows = [r for r in rows if tag_set & {t.strip().lower() for t in r["tags"].split(",")}]
+
+    conn.close()
+
+    if not rows:
+        return f"No knowledge entries found for '{query}'."
+
+    lines = [f"Found {len(rows)} knowledge entry/entries for '{query}':\n"]
+    for r in rows:
+        lines.append(f"--- {r['agent']} | {r['ts'][:16]} | {r['tags']} ---")
+        lines.append(f"  {r['title']}")
+        content_preview = r["content"][:300]
+        if len(r["content"]) > 300:
+            content_preview += "..."
+        lines.append(f"  {content_preview}")
+        if r["source"]:
+            lines.append(f"  Source: {r['source']}")
+        lines.append("")
 
     return "\n".join(lines)
 

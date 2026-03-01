@@ -26,8 +26,11 @@ Claude Code sessions lose context when they compact or crash. Cairn gives your a
 - **Identity integrity** — SHA-256 checksums detect tampering with identity files
 - **Principal memory** — remembers who you are, your preferences, your working style
 - **Full-text search** — find anything from past sessions instantly
+- **Knowledge extraction** — journal rotation extracts key findings before archiving
+- **Transcript ingest** — recover history from past sessions via CLI
+- **Long-term recall** — searchable knowledge base that grows over time
 
-## Tools
+## MCP Tools (12)
 
 | Tool | What it does |
 |------|-------------|
@@ -41,16 +44,42 @@ Claude Code sessions lose context when they compact or crash. Cairn gives your a
 | `mark_compacted` | Note that autocompaction happened |
 | `read_principal` | Read principal profile — who you work with |
 | `observe_principal` | Record observations about your principal |
-| `search_memory` | Full-text search across all handoffs and journals |
+| `search_memory` | Full-text search across handoffs and journals |
+| `recall` | Search the knowledge base — long-term memory |
+
+## CLI Commands
+
+| Command | What it does |
+|---------|-------------|
+| `cairn init` | Initialize persistent memory in your project |
+| `cairn serve` | Start the MCP server |
+| `cairn status` | Show agent status and last activity |
+| `cairn journal` | Print recent journal entries |
+| `cairn handoffs` | Print recent session handoffs |
+| `cairn ingest <path>` | Parse a Claude Code transcript into knowledge |
+| `cairn transcripts` | List available transcript files |
+| `cairn rotate` | Archive old journals, extract findings |
+| `cairn verify` | Verify installed package file integrity |
+| `cairn integrity` | Check identity file checksums |
+| `cairn trust <file>` | Accept changes to an identity file |
+
+## Memory Architecture
+
+```
+Hot (always available):     Journals + Handoffs      ← what happened recently
+Warm (searchable):          Knowledge table           ← extracted findings + ingested transcripts
+Cold (archived):            journals/archive/         ← old journals, never deleted
+```
+
+**Journal rotation** (`cairn rotate`) extracts key findings from old journals before archiving them. Your agent's context stays clean while nothing is lost.
+
+**Transcript ingest** (`cairn ingest`) parses Claude Code JSONL transcripts offline and stores highlights — commits, decisions, user instructions, file writes. The agent never touches raw JSON.
+
+**Recall** (`recall` MCP tool) searches the knowledge base. This is your agent's long-term memory — findings extracted from journals, highlights from transcripts, everything searchable.
 
 ## Integrity
 
 Cairn checksums your identity files on creation. Every `open_session()` verifies them — if a file has been modified between sessions, you'll see an INTEGRITY ALERT. Accept changes after review with `cairn trust <file>`.
-
-```bash
-cairn verify       # Verify installed package files
-cairn integrity    # Check identity file checksums
-```
 
 No dependencies beyond Python's stdlib for integrity checks.
 
