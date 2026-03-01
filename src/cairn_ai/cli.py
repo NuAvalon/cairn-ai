@@ -304,9 +304,15 @@ def _generate_claude_md(multi_agent: bool) -> str:
 
 This project uses cairn for session continuity{agent_param}.
 
+## IMPORTANT: First Action Every Session
+Before responding to ANY user message, you MUST:
+1. Read `.persist/mission.md` — this is your mission. Acknowledge it briefly in your first response.
+2. Then run the startup protocol below.
+
+This is not optional. The mission is the first thing you read, every session, before anything else.
+
 ## Startup Protocol
 ```
-0. Read .persist/mission.md    — Before anything else. Why you exist.
 1. open_session()              — Detect crashes, get glyph counter
 2. read_principal()            — Who you're working with, their preferences
 3. recover_context()           — Journal + reasoning + last handoff
