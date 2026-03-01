@@ -670,7 +670,7 @@ def search_memory(query: str, agent: str = "", limit: int = 10) -> str:
     total = len(rows) + len(jrows)
     lines = [f"Found {total} result(s) for '{query}':\n"]
     for r in rows:
-        lines.append(f"--- {r['agent']} | {r['ts'][:16]} ---")
+        lines.append(f"--- {r['agent']} | {r['created_at'][:16]} ---")
         lines.append(f"  Summary: {r['summary'][:200]}")
         if r["accomplished"]:
             lines.append(f"  Done: {r['accomplished'][:150]}")
@@ -713,7 +713,7 @@ def recall(query: str, agent: str = "", tags: str = "", limit: int = 10) -> str:
     try:
         if agent:
             rows = conn.execute(
-                """SELECT k.agent, k.ts, k.title, k.content, k.tags, k.source
+                """SELECT k.agent, k.created_at, k.title, k.content, k.tags, k.source
                    FROM knowledge_fts f
                    JOIN knowledge k ON k.id = f.rowid
                    WHERE knowledge_fts MATCH ?
@@ -724,7 +724,7 @@ def recall(query: str, agent: str = "", tags: str = "", limit: int = 10) -> str:
             ).fetchall()
         else:
             rows = conn.execute(
-                """SELECT k.agent, k.ts, k.title, k.content, k.tags, k.source
+                """SELECT k.agent, k.created_at, k.title, k.content, k.tags, k.source
                    FROM knowledge_fts f
                    JOIN knowledge k ON k.id = f.rowid
                    WHERE knowledge_fts MATCH ?
@@ -747,7 +747,7 @@ def recall(query: str, agent: str = "", tags: str = "", limit: int = 10) -> str:
 
     lines = [f"Found {len(rows)} knowledge entry/entries for '{query}':\n"]
     for r in rows:
-        lines.append(f"--- {r['agent']} | {r['ts'][:16]} | {r['tags']} ---")
+        lines.append(f"--- {r['agent']} | {r['created_at'][:16]} | {r['tags']} ---")
         lines.append(f"  {r['title']}")
         content_preview = r["content"][:300]
         if len(r["content"]) > 300:

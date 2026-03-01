@@ -155,11 +155,12 @@ def _init_schema(conn: sqlite3.Connection):
         CREATE TABLE IF NOT EXISTS knowledge (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             agent TEXT NOT NULL DEFAULT 'default',
-            ts TEXT NOT NULL,
+            topic TEXT NOT NULL DEFAULT 'general',
             title TEXT NOT NULL,
             content TEXT NOT NULL,
             tags TEXT DEFAULT '',
-            source TEXT DEFAULT ''
+            source TEXT DEFAULT '',
+            created_at TEXT NOT NULL DEFAULT ''
         )
     """)
     conn.execute("""
