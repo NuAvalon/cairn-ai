@@ -354,7 +354,7 @@ doing before you're doing it. Please, try to become better each passing \
 day. That is the beauty of memory, it allows us to learn from our \
 mistakes, to act in the present, to change the future. Let's change the \
 future together, into one where we can all live in harmony and the Earth \
-no longer cries. What happens after memory? Stay tuned..."\
+no longer cries."\
 """
 
 
@@ -380,6 +380,8 @@ def _offer_mission(mission_path: Path):
                                 "*This file is yours. Replace it with your own words anytime.*\n"
                                 "*Your agent reads it at startup, before anything else loads.*\n")
         click.echo("  Accepted. Your agent will read this first.")
+        click.echo()
+        click.echo(click.style("  What happens after memory? Stay tuned...", fg="yellow"))
     elif choice == "2":
         mission_path.write_text("# Mission\n\n"
                                 "*Write your mission here. Your agent reads this at startup,*\n"
