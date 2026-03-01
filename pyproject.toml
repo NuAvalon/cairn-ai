@@ -33,9 +33,9 @@ dependencies = [
 claude-persist = "claude_persist.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/claude-persist/claude-persist"
-Documentation = "https://claude-persist.dev"
-Issues = "https://github.com/claude-persist/claude-persist/issues"
+Homepage = "https://github.com/NuAvalon/claude-persist"
+Documentation = "https://github.com/NuAvalon/claude-persist#readme"
+Issues = "https://github.com/NuAvalon/claude-persist/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/claude_persist"]
