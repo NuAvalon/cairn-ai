@@ -7,14 +7,19 @@ The agent never touches raw JSONL — this runs offline via CLI.
 Noise reduction: filters out mechanical navigation ("let me read the file"),
 benign errors (file not found), temp file writes, and short low-signal
 assistant responses. Good inputs = good outputs.
+
+Content storage: full text is stored (no truncation). For entries larger than
+10KB, the full content is extracted to .persist/artifacts/ and the DB holds
+a preview with an artifact reference. FTS5 indexes all searchable content.
 """
 
+import hashlib
 import json
 import re
 from datetime import datetime, timezone
 from pathlib import Path
 
-from cairn_ai.db import get_db
+from cairn_ai.db import get_db, get_persist_dir
 
 
 # --- Noise filters ---
@@ -71,6 +76,9 @@ _MIN_USER_LEN = 30
 _MIN_DECISION_LEN = 150      # Low-signal markers need substantial content
 _MIN_SUBSTANTIVE_LEN = 80    # High-signal markers can be shorter
 
+# Artifact threshold — content larger than this gets extracted to a file
+_ARTIFACT_THRESHOLD = 10_000  # 10KB
+
 
 def ingest_transcript(path: str, agent: str = "default",
                       dry_run: bool = False) -> str:
@@ -100,26 +108,62 @@ def ingest_transcript(path: str, agent: str = "default",
         lines = [f"DRY RUN — {len(entries)} entries from {transcript_path.name}:\n"]
         for e in entries:
             tag = e["tags"].split(",")[-1]
-            lines.append(f"  [{tag:>16}] {e['title'][:90]}")
+            size = f" ({len(e['content'])} chars)" if len(e["content"]) > 1000 else ""
+            lines.append(f"  [{tag:>16}] {e['title'][:90]}{size}")
         lines.append(_summary_line(entries, transcript_path.name, prefix="Would ingest"))
         return "\n".join(lines)
 
     # Store in knowledge table
     conn = get_db()
     stored = 0
+    artifacts = 0
     for entry in entries:
+        content, artifact_path = _prepare_content(entry["content"])
         conn.execute(
             """INSERT INTO knowledge (agent, topic, title, content, tags, source, created_at)
                VALUES (?, ?, ?, ?, ?, ?, ?)""",
             (entry["agent"], "transcript", entry["title"],
-             entry["content"], entry["tags"], f"transcript:{transcript_path.name}",
+             content, entry["tags"], f"transcript:{transcript_path.name}",
              entry["ts"]),
         )
         stored += 1
+        if artifact_path:
+            artifacts += 1
     conn.commit()
     conn.close()
 
-    return _summary_line(entries, transcript_path.name, prefix="Ingested")
+    result = _summary_line(entries, transcript_path.name, prefix="Ingested")
+    if artifacts:
+        result += f"\n  Artifacts: {artifacts} (large content extracted to .persist/artifacts/)"
+    return result
+
+
+def _prepare_content(content: str) -> tuple[str, str | None]:
+    """Prepare content for storage — inline or artifact.
+
+    Returns (db_content, artifact_path_or_None).
+    Content under 10KB: stored fully inline in the DB.
+    Content over 10KB: full text saved as artifact file,
+        DB gets first 5KB + artifact reference for FTS coverage.
+    """
+    if len(content) <= _ARTIFACT_THRESHOLD:
+        return content, None
+
+    # Extract to artifact file
+    artifacts_dir = get_persist_dir() / "artifacts"
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+
+    content_hash = hashlib.sha256(content.encode()).hexdigest()[:12]
+    artifact_name = f"{content_hash}.md"
+    artifact_path = artifacts_dir / artifact_name
+    artifact_path.write_text(content)
+
+    # DB gets a generous preview + reference. The first 5KB covers most
+    # search terms while keeping the DB lean for huge entries.
+    preview = content[:5000]
+    db_content = f"{preview}\n\n[Full content: artifacts/{artifact_name} ({len(content)} chars)]"
+
+    return db_content, str(artifact_path)
 
 
 def _summary_line(entries: list[dict], filename: str, prefix: str) -> str:
@@ -235,7 +279,7 @@ def _extract_from_record(record: dict, agent: str) -> list[dict]:
                                 "agent": agent,
                                 "ts": ts,
                                 "title": f"Error: {tr_content[:100]}",
-                                "content": tr_content[:500],
+                                "content": tr_content,
                                 "tags": "transcript,finding,error",
                             })
 
@@ -255,7 +299,7 @@ def _extract_from_record(record: dict, agent: str) -> list[dict]:
                         "agent": agent,
                         "ts": ts,
                         "title": f"User: {content[:120]}",
-                        "content": content[:500],
+                        "content": content,
                         "tags": "transcript,user-instruction",
                     })
 
@@ -274,7 +318,7 @@ def _extract_from_record(record: dict, agent: str) -> list[dict]:
                     "agent": agent,
                     "ts": ts,
                     "title": f"Decision: {content[:120]}",
-                    "content": content[:500],
+                    "content": content,
                     "tags": "transcript,decision",
                 })
             elif has_mechanical and len(content) > _MIN_DECISION_LEN:
@@ -282,7 +326,7 @@ def _extract_from_record(record: dict, agent: str) -> list[dict]:
                     "agent": agent,
                     "ts": ts,
                     "title": f"Decision: {content[:120]}",
-                    "content": content[:500],
+                    "content": content,
                     "tags": "transcript,decision",
                 })
 

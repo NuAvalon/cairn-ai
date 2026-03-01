@@ -765,15 +765,44 @@ def recall(query: str, agent: str = "", tags: str = "", limit: int = 10) -> str:
     for r in rows:
         lines.append(f"--- {r['agent']} | {r['created_at'][:16]} | {r['tags']} ---")
         lines.append(f"  {r['title']}")
-        content_preview = r["content"][:300]
-        if len(r["content"]) > 300:
+        content = r["content"]
+        # Check for artifact reference
+        artifact_ref = ""
+        if "[Full content: artifacts/" in content:
+            artifact_ref = " (has artifact — use read_artifact() for full text)"
+        content_preview = content[:300]
+        if len(content) > 300:
             content_preview += "..."
         lines.append(f"  {content_preview}")
+        if artifact_ref:
+            lines.append(f"  {artifact_ref}")
         if r["source"]:
             lines.append(f"  Source: {r['source']}")
         lines.append("")
 
     return "\n".join(lines)
+
+
+@mcp.tool()
+def read_artifact(filename: str) -> str:
+    """Read the full content of a data artifact.
+
+    When recall() shows '[Full content: artifacts/abc123.md]', use this
+    tool to fetch the complete text. Artifacts store large content that
+    was too big for inline DB storage (tables, analyses, code blocks).
+
+    Args:
+        filename: The artifact filename (e.g. 'abc123def456.md')
+    """
+    artifacts_dir = get_persist_dir() / "artifacts"
+    # Strip any path prefix — only allow reading from artifacts dir
+    safe_name = Path(filename).name
+    artifact_path = artifacts_dir / safe_name
+
+    if not artifact_path.exists():
+        return f"Artifact not found: {safe_name}"
+
+    return artifact_path.read_text()
 
 
 def _search_journals(query: str, agent: str, limit: int) -> str:
