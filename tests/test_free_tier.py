@@ -12,7 +12,7 @@ from cairn_ai.db import configure, get_db, load_lifecycle, get_journal_dir
 from cairn_ai.server import (
     ping, open_session, set_status, write_handoff,
     read_journal, recover_context, check_session_health, mark_compacted,
-    read_principal,
+    read_principal, observe_principal,
 )
 
 
@@ -254,3 +254,39 @@ class TestPrincipal:
         result = read_principal()
         assert "日本語" in result
         assert "🎯" in result
+
+
+class TestObservePrincipal:
+    """Tests for observe_principal (free tier)."""
+
+    def test_creates_file(self, fresh_db):
+        """observe_principal creates principal.md if it doesn't exist."""
+        result = observe_principal(observations="Prefers snake_case. Works late EST.", agent="alice")
+        assert "recorded" in result.lower()
+
+        principal_path = fresh_db / "principal.md"
+        assert principal_path.exists()
+        content = principal_path.read_text()
+        assert "Prefers snake_case" in content
+        assert "Works late EST" in content
+
+    def test_appends_observations(self, fresh_db):
+        """Multiple observations append to the file."""
+        observe_principal(observations="Prefers Python.", agent="alice")
+        observe_principal(observations="Hates boilerplate.", agent="alice")
+
+        principal_path = fresh_db / "principal.md"
+        content = principal_path.read_text()
+        assert "Prefers Python" in content
+        assert "Hates boilerplate" in content
+
+    def test_preserves_existing_content(self, fresh_db):
+        """Appends to existing principal.md without overwriting."""
+        principal_path = fresh_db / "principal.md"
+        principal_path.write_text("# About My Principal\n\n## Notes\n- Likes coffee\n\n---\n")
+
+        observe_principal(observations="Works in healthcare domain.", agent="alice")
+
+        content = principal_path.read_text()
+        assert "Likes coffee" in content  # preserved
+        assert "healthcare domain" in content  # added

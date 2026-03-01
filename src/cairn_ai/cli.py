@@ -172,23 +172,6 @@ def handoffs(agent: str):
             click.echo(f"Pending: {r['pending']}")
 
 
-@main.command("license")
-@click.argument("key")
-def activate_license(key: str):
-    """Activate a paid tier license key."""
-    from cairn_ai.db import get_persist_dir
-    from cairn_ai.license import check_license
-
-    license_file = get_persist_dir() / "license"
-    license_file.write_text(key.strip())
-
-    if check_license():
-        click.echo("License activated! Pro features are now available.")
-    else:
-        click.echo("Invalid license key. Check your key and try again.")
-        license_file.unlink()
-
-
 @main.command()
 def verify():
     """Verify integrity of installed cairn files."""
