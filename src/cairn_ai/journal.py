@@ -1,11 +1,14 @@
 """Journal file I/O — append-only hash-chained markdown journals per agent per day."""
 
 import hashlib
+import logging
 import re as _re
 from datetime import datetime, timezone
 from pathlib import Path
 
 from cairn_ai.db import get_journal_dir
+
+log = logging.getLogger("cairn")
 
 
 def _sanitize_agent(name: str) -> str:
@@ -14,14 +17,14 @@ def _sanitize_agent(name: str) -> str:
 
 
 def _hash_entry(content: str) -> str:
-    """SHA-256 hash of a journal entry, truncated to 12 hex chars."""
-    return hashlib.sha256(content.encode()).hexdigest()[:12]
+    """SHA-256 hash of a journal entry, truncated to 32 hex chars (128 bits)."""
+    return hashlib.sha256(content.encode()).hexdigest()[:32]
 
 
 def _get_last_hash(journal_file: Path) -> str:
     """Extract the most recent hash from an existing journal file."""
     if not journal_file.exists():
-        return "000000000000"  # Genesis hash
+        return "0" * 32  # Genesis hash
     content = journal_file.read_text()
     # Find last <!-- hash: ... --> marker
     import re
@@ -69,8 +72,8 @@ def write_journal(agent: str, status: str, task: str, finding: str, timestamp: s
         )
         conn.commit()
         conn.close()
-    except Exception:
-        pass  # Journal files are primary — DB index is best-effort
+    except Exception as e:
+        log.warning("Journal DB mirror failed (file is primary): %s", e)
 
 
 def read_journal_file(agent: str, date: str = "") -> str:
@@ -146,7 +149,7 @@ def verify_journal_chain(agent: str, date: str = "") -> dict:
     # We need the text BETWEEN markers (or between start and first marker)
 
     # Rebuild and verify — recompute hashes from actual content
-    prev = "000000000000"
+    prev = "0" * 32
     for i, (entry_hash, claimed_prev) in enumerate(markers):
         if claimed_prev != prev:
             return {"status": "broken", "entries": len(markers), "break_at": i,

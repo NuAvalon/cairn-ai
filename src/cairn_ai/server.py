@@ -5,10 +5,13 @@ Tools: ping, open_session, set_status, write_handoff, read_journal,
        read_principal, observe_principal, search_memory, recall
 """
 
+import logging
 import re
 from datetime import datetime, timezone
 
 from mcp.server.fastmcp import FastMCP
+
+log = logging.getLogger("cairn")
 
 from cairn_ai.db import get_db, get_journal_dir, load_lifecycle, save_lifecycle
 from cairn_ai.journal import write_journal, read_journal_file, append_handoff_to_journal
@@ -38,8 +41,8 @@ def _resolve_agent(agent: str) -> str:
         stored = config.get("agent_name", "")
         if stored:
             return stored.lower()
-    except Exception:
-        pass
+    except Exception as e:
+        log.debug("Could not resolve stored agent name: %s", e)
     return "default"
 
 
@@ -77,7 +80,7 @@ def _increment_glyph(agent: str, conn=None) -> int:
 @mcp.tool()
 def ping() -> str:
     """Health check. Returns server name, uptime, and DB stats."""
-    from cairn_ai.db import get_db_path
+    from cairn_ai.db import get_db_path, EXPECTED_TABLES, verify_schema
 
     uptime = datetime.now(timezone.utc) - _SERVER_START
     hours, remainder = divmod(int(uptime.total_seconds()), 3600)
@@ -91,9 +94,13 @@ def ping() -> str:
         lines.append(f"DB: {db_path} ({size_kb:.0f} KB)")
         try:
             conn = get_db()
-            for table in ["agent_status", "glyph_counters", "handoffs", "sync_points"]:
-                row = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
-                lines.append(f"  {table}: {row[0]} rows")
+            missing = verify_schema(conn)
+            if missing:
+                lines.append(f"  ⚠️ MISSING TABLES: {', '.join(missing)}")
+            for table in EXPECTED_TABLES:
+                if table not in missing:
+                    row = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
+                    lines.append(f"  {table}: {row[0]} rows")
             conn.close()
         except Exception as e:
             lines.append(f"  DB error: {e}")
@@ -203,6 +210,20 @@ def open_session(agent: str = "default") -> str:
     if integrity["status"] == "alert":
         integrity_msg = "\n\n" + "\n".join(integrity["alerts"])
 
+    # Verify journal hash chain (tamper detection)
+    from cairn_ai.journal import verify_journal_chain
+    chain_msg = ""
+    try:
+        chain = verify_journal_chain(agent)
+        if chain["status"] == "broken":
+            chain_msg = (
+                f"\n\nJOURNAL INTEGRITY: Hash chain BROKEN at entry {chain['break_at']} "
+                f"({chain.get('reason', 'unknown')}). "
+                f"Journal may have been tampered with or corrupted."
+            )
+    except Exception as e:
+        log.warning("Journal chain verification failed: %s", e)
+
     # Check backup status
     backup_msg = ""
     try:
@@ -214,14 +235,16 @@ def open_session(agent: str = "default") -> str:
             backups = list_backups()
             if not backups:
                 backup_msg = "\n\nBACKUP: Backup directory configured but no backups exist yet. Consider asking your principal to run `cairn backup`."
-    except Exception:
-        pass  # Backup check is best-effort
+    except Exception as e:
+        log.debug("Backup check skipped: %s", e)
 
     result = f"Session opened for {agent} at {now[:16]} | Glyph: {glyph_num}"
     if warning:
         result += f"\n\nWARNING: {warning}"
     if integrity_msg:
         result += integrity_msg
+    if chain_msg:
+        result += chain_msg
     if backup_msg:
         result += backup_msg
     return result
@@ -793,7 +816,8 @@ def recall(query: str, agent: str = "", tags: str = "", limit: int = 10) -> str:
                    LIMIT ?""",
                 (query, limit),
             ).fetchall()
-    except Exception:
+    except Exception as e:
+        log.warning("Knowledge FTS search failed: %s", e)
         rows = []
 
     # Optional tag filter
@@ -879,6 +903,175 @@ def _search_journals(query: str, agent: str, limit: int) -> str:
     lines = [f"Found {len(results)} journal match(es) for '{query}':\n"]
     lines.extend(results)
     return "\n".join(lines)
+
+
+# ── Optional vector search ──
+
+def _get_embedder():
+    """Lazy-load sentence transformer. Returns None if not installed."""
+    global _embedder
+    try:
+        return _embedder
+    except NameError:
+        pass
+    try:
+        from sentence_transformers import SentenceTransformer
+        _embedder = SentenceTransformer("all-MiniLM-L6-v2")
+        log.info("Vector search enabled (all-MiniLM-L6-v2)")
+    except ImportError:
+        _embedder = None
+    return _embedder
+
+
+def _embed_text(text: str) -> bytes | None:
+    """Embed text and return as bytes. Returns None if vectors unavailable."""
+    embedder = _get_embedder()
+    if embedder is None:
+        return None
+    import numpy as np
+    vec = embedder.encode(text, normalize_embeddings=True)
+    return vec.astype(np.float32).tobytes()
+
+
+def _cosine_sim(a: bytes, b: bytes) -> float:
+    """Cosine similarity between two embedding blobs."""
+    import numpy as np
+    va = np.frombuffer(a, dtype=np.float32)
+    vb = np.frombuffer(b, dtype=np.float32)
+    return float(np.dot(va, vb))
+
+
+@mcp.tool()
+def vector_search(query: str, agent: str = "", limit: int = 5) -> str:
+    """Semantic search over knowledge entries using vector embeddings.
+
+    Requires: pip install cairn-ai[vectors]
+    Falls back to FTS5 if vectors are not installed.
+
+    Args:
+        query: Natural language query (e.g. "how we handle crashes")
+        agent: Filter to specific agent (optional)
+        limit: Max results (default 5)
+    """
+    embedder = _get_embedder()
+    if embedder is None:
+        return (
+            "Vector search not available — sentence-transformers not installed.\n"
+            "Install with: pip install cairn-ai[vectors]\n"
+            "Falling back to recall() for FTS5 keyword search."
+        )
+
+    query_emb = _embed_text(query)
+    if query_emb is None:
+        return "Failed to generate query embedding."
+
+    conn = get_db()
+
+    # Get all vectors
+    if agent:
+        agent = _resolve_agent(agent)
+        rows = conn.execute(
+            """SELECT kv.embedding, k.id, k.agent, k.title, k.content, k.tags, k.created_at
+               FROM knowledge_vectors kv
+               JOIN knowledge k ON k.id = kv.knowledge_id
+               WHERE k.agent = ?""",
+            (agent,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            """SELECT kv.embedding, k.id, k.agent, k.title, k.content, k.tags, k.created_at
+               FROM knowledge_vectors kv
+               JOIN knowledge k ON k.id = kv.knowledge_id""",
+        ).fetchall()
+
+    conn.close()
+
+    if not rows:
+        return "No vector embeddings stored yet. Store knowledge entries to build the vector index."
+
+    # Score and rank
+    scored = []
+    for r in rows:
+        sim = _cosine_sim(query_emb, r["embedding"])
+        scored.append((sim, r))
+    scored.sort(key=lambda x: x[0], reverse=True)
+
+    lines = [f"Top {min(limit, len(scored))} semantic matches for '{query}':\n"]
+    for sim, r in scored[:limit]:
+        lines.append(f"[{sim:.3f}] {r['agent']} | {r['created_at'][:16]} | {r['tags']}")
+        lines.append(f"  {r['title']}")
+        content = r["content"][:200]
+        if len(r["content"]) > 200:
+            content += "..."
+        lines.append(f"  {content}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def embed_knowledge(knowledge_id: int = 0, all_missing: bool = False) -> str:
+    """Generate vector embeddings for knowledge entries.
+
+    Call with all_missing=True to embed all entries that don't have vectors yet.
+    Call with a specific knowledge_id to embed one entry.
+
+    Requires: pip install cairn-ai[vectors]
+
+    Args:
+        knowledge_id: Specific entry to embed (0 = skip)
+        all_missing: Embed all entries without vectors
+    """
+    if _get_embedder() is None:
+        return "Vector search not available. Install: pip install cairn-ai[vectors]"
+
+    conn = get_db()
+
+    if knowledge_id > 0:
+        row = conn.execute(
+            "SELECT id, title, content FROM knowledge WHERE id = ?",
+            (knowledge_id,),
+        ).fetchone()
+        if not row:
+            conn.close()
+            return f"Knowledge entry #{knowledge_id} not found."
+        emb = _embed_text(f"{row['title']} {row['content']}")
+        if emb:
+            conn.execute(
+                "INSERT OR REPLACE INTO knowledge_vectors (knowledge_id, embedding, model) VALUES (?, ?, ?)",
+                (row["id"], emb, "all-MiniLM-L6-v2"),
+            )
+            conn.commit()
+        conn.close()
+        return f"Embedded knowledge #{knowledge_id}."
+
+    if all_missing:
+        rows = conn.execute(
+            """SELECT k.id, k.title, k.content FROM knowledge k
+               LEFT JOIN knowledge_vectors kv ON k.id = kv.knowledge_id
+               WHERE kv.id IS NULL""",
+        ).fetchall()
+
+        if not rows:
+            conn.close()
+            return "All knowledge entries already have embeddings."
+
+        count = 0
+        for r in rows:
+            emb = _embed_text(f"{r['title']} {r['content']}")
+            if emb:
+                conn.execute(
+                    "INSERT OR REPLACE INTO knowledge_vectors (knowledge_id, embedding, model) VALUES (?, ?, ?)",
+                    (r["id"], emb, "all-MiniLM-L6-v2"),
+                )
+                count += 1
+
+        conn.commit()
+        conn.close()
+        return f"Embedded {count}/{len(rows)} knowledge entries."
+
+    conn.close()
+    return "Pass knowledge_id=N or all_missing=True."
 
 
 def main():

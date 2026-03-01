@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "cairn-ai"
-version = "0.2.0"
+version = "0.3.0"
 description = "Persistent memory for AI agents — survive compaction, recover from crashes, maintain identity across sessions."
 readme = "README.md"
 license = "MIT"
@@ -28,6 +28,9 @@ dependencies = [
     "mcp>=1.0",
     "click>=8.0",
 ]
+
+[project.optional-dependencies]
+vectors = ["sentence-transformers>=2.0", "numpy>=1.24"]
 
 [project.scripts]
 cairn = "cairn_ai.cli:main"
