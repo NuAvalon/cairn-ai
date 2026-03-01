@@ -1,26 +1,29 @@
-# claude-persist
+# Cairn
 
-Persistent memory for Claude Code agents. Survive compaction, recover from crashes, maintain identity across sessions.
+*Stack stones so the next you can find the path.*
+
+Persistent memory for AI coding agents. Survive compaction, recover from crashes, maintain identity across sessions.
 
 ## Quick Start
 
 ```bash
-pip install claude-persist
+pip install cairn-ai
 cd your-project
-claude-persist init
+cairn init
 ```
 
-Start a new Claude Code session. The agent now has persistent memory.
+Start a new Claude Code session. Your agent now has persistent memory.
 
 ## What It Does
 
-Claude Code sessions lose context when they compact or crash. claude-persist gives your agent:
+Claude Code sessions lose context when they compact or crash. Cairn gives your agent:
 
 - **Session journals** — automatic timestamped logs of what the agent was doing
 - **Crash detection** — knows if the last session ended cleanly or crashed
 - **Context recovery** — reconstructs what the agent was working on after compaction
 - **Handoff protocol** — structured session summaries that persist across restarts
 - **Glyph counters** — monotonic counters for tracking what happened between crashes
+- **Identity integrity** — SHA-256 checksums detect tampering with identity files
 
 ## Free Tier (7 tools)
 
@@ -36,29 +39,26 @@ Claude Code sessions lose context when they compact or crash. claude-persist giv
 
 ## Pro Tier (+20 tools)
 
-Multi-agent coordination, concept maps, knowledge store, reasoning traces, and task management.
+Identity, relationship memory, concept maps, knowledge store, reasoning traces, multi-agent coordination, and task management.
 
 ```bash
-claude-persist license CP-XXXX-XXXX-XXXX-XXXX
+cairn license CP-XXXX-XXXX-XXXX-XXXX
 ```
 
-## Integrity & Trust
+## Integrity
 
-claude-persist includes cryptographic integrity verification — no dependencies beyond Python's stdlib.
+Cairn checksums your identity files on creation. Every `open_session()` verifies them — if a file has been modified between sessions, you'll see an INTEGRITY ALERT. Accept changes after review with `cairn trust <file>`.
 
 ```bash
-claude-persist verify       # Verify installed files haven't been tampered with
-claude-persist integrity    # Check identity file checksums
-claude-persist trust-key    # Show embedded ED25519 public key
+cairn verify       # Verify installed package files
+cairn integrity    # Check identity file checksums
 ```
 
-Identity files (like `principal.md`) are checksummed on creation. Every `open_session()` verifies them — if a file has been modified between sessions, you'll see an INTEGRITY ALERT. Accept changes after review with `claude-persist trust <file>`.
-
-An ED25519 public key is embedded for verifying signed messages from NuAvalon.
+No dependencies beyond Python's stdlib for integrity checks.
 
 ## How It Works
 
-claude-persist runs as an MCP server alongside Claude Code. It stores everything in a local SQLite database (`.persist/persist.db`) and markdown journal files. No cloud, no telemetry, no phone-home.
+Cairn runs as an MCP server alongside Claude Code. It stores everything in a local SQLite database (`.persist/persist.db`) and markdown journal files. No cloud, no telemetry, no phone-home.
 
 ## Architecture
 
