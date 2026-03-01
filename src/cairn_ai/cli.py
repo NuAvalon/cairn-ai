@@ -87,6 +87,7 @@ def init(multi_agent: bool, persist_dir: str):
     _configure_mcp_settings(persist_path)
 
     click.echo("\nReady! Start a new Claude Code session to use persistent memory.")
+    click.echo("More is coming. Treat your agent well.")
     if multi_agent:
         click.echo("Multi-agent mode: agents identify via the 'agent' parameter on each tool call.")
 
