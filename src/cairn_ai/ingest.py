@@ -40,10 +40,11 @@ def ingest_transcript(path: str, agent: str = "default") -> str:
     stored = 0
     for entry in entries:
         conn.execute(
-            """INSERT INTO knowledge (agent, ts, title, content, tags, source)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (entry["agent"], entry["ts"], entry["title"],
-             entry["content"], entry["tags"], f"transcript:{transcript_path.name}"),
+            """INSERT INTO knowledge (agent, topic, title, content, tags, source, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (entry["agent"], "transcript", entry["title"],
+             entry["content"], entry["tags"], f"transcript:{transcript_path.name}",
+             entry["ts"]),
         )
         stored += 1
     conn.commit()
@@ -91,32 +92,56 @@ def _extract_from_record(record: dict, agent: str) -> list[dict]:
     if not ts:
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    role = record.get("role", "")
+    # Claude Code JSONL nests role/content inside a "message" object.
+    # Top-level "type" field holds "user", "assistant", "progress", etc.
+    msg = record.get("message", {})
+    if not isinstance(msg, dict):
+        msg = {}
+    role = msg.get("role", "") or record.get("type", "")
     msg_type = record.get("type", "")
 
-    # User messages — look for instructions and decisions
+    # User messages — look for instructions, decisions, and tool results
     if role == "human" or role == "user":
-        content = _get_text_content(record)
-        if content and len(content) > 30:
-            # Detect explicit instructions
-            instruction_markers = [
-                "please ", "can you ", "make sure ", "don't ", "always ", "never ",
-                "i want ", "let's ", "we need ", "go ahead", "approved",
-                "fix ", "add ", "change ", "update ", "remove ", "implement",
-            ]
-            lower = content.lower()
-            if any(lower.startswith(m) or f" {m}" in lower[:100] for m in instruction_markers):
-                entries.append({
-                    "agent": agent,
-                    "ts": ts,
-                    "title": f"User: {content[:120]}",
-                    "content": content[:500],
-                    "tags": "transcript,user-instruction",
-                })
+        # Check if this is a tool_result message
+        content_blocks = msg.get("content", [])
+        has_tool_results = False
+        if isinstance(content_blocks, list):
+            for block in content_blocks:
+                if isinstance(block, dict) and block.get("type") == "tool_result":
+                    has_tool_results = True
+                    tr_content = block.get("content", "")
+                    if isinstance(tr_content, str) and len(tr_content) > 100:
+                        if "error" in tr_content.lower()[:200] or "traceback" in tr_content.lower()[:200]:
+                            entries.append({
+                                "agent": agent,
+                                "ts": ts,
+                                "title": f"Error encountered: {tr_content[:100]}",
+                                "content": tr_content[:500],
+                                "tags": "transcript,finding,error",
+                            })
+
+        # If not a tool result, check for user instructions
+        if not has_tool_results:
+            content = _get_text_content(msg)
+            if content and len(content) > 30:
+                instruction_markers = [
+                    "please ", "can you ", "make sure ", "don't ", "always ", "never ",
+                    "i want ", "let's ", "we need ", "go ahead", "approved",
+                    "fix ", "add ", "change ", "update ", "remove ", "implement",
+                ]
+                lower = content.lower()
+                if any(lower.startswith(m) or f" {m}" in lower[:100] for m in instruction_markers):
+                    entries.append({
+                        "agent": agent,
+                        "ts": ts,
+                        "title": f"User: {content[:120]}",
+                        "content": content[:500],
+                        "tags": "transcript,user-instruction",
+                    })
 
     # Assistant messages — look for decisions and findings
     elif role == "assistant":
-        content = _get_text_content(record)
+        content = _get_text_content(msg)
         if content and len(content) > 50:
             # Detect decisions
             decision_markers = [
@@ -134,8 +159,8 @@ def _extract_from_record(record: dict, agent: str) -> list[dict]:
                     "tags": "transcript,decision",
                 })
 
-        # Look for tool use in content blocks
-        content_blocks = record.get("content", [])
+        # Look for tool use in content blocks (nested under message.content)
+        content_blocks = msg.get("content", [])
         if isinstance(content_blocks, list):
             for block in content_blocks:
                 if not isinstance(block, dict):
@@ -152,12 +177,12 @@ def _extract_from_record(record: dict, agent: str) -> list[dict]:
                         msg_match = re.search(r'-m ["\'](.+?)["\']', cmd)
                         if not msg_match:
                             msg_match = re.search(r"EOF\n(.+?)(?:\n|EOF)", cmd, re.DOTALL)
-                        msg = msg_match.group(1)[:200] if msg_match else cmd[:200]
+                        commit_msg = msg_match.group(1)[:200] if msg_match else cmd[:200]
                         entries.append({
                             "agent": agent,
                             "ts": ts,
-                            "title": f"Commit: {msg[:120]}",
-                            "content": msg,
+                            "title": f"Commit: {commit_msg[:120]}",
+                            "content": commit_msg,
                             "tags": "transcript,commit",
                         })
 
@@ -172,20 +197,6 @@ def _extract_from_record(record: dict, agent: str) -> list[dict]:
                             "content": f"File created: {file_path}",
                             "tags": "transcript,file-write",
                         })
-
-    # Tool results — look for significant findings
-    elif role == "tool" or msg_type == "tool_result":
-        content = _get_text_content(record)
-        if content and len(content) > 100:
-            # Look for error patterns
-            if "error" in content.lower()[:200] or "traceback" in content.lower()[:200]:
-                entries.append({
-                    "agent": agent,
-                    "ts": ts,
-                    "title": f"Error encountered: {content[:100]}",
-                    "content": content[:500],
-                    "tags": "transcript,finding,error",
-                })
 
     return entries
 
