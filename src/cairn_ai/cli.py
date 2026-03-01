@@ -173,6 +173,60 @@ def handoffs(agent: str):
 
 
 @main.command()
+@click.argument("path")
+@click.option("--agent", default="default", help="Agent name to attribute entries to")
+def ingest(path: str, agent: str):
+    """Ingest a Claude Code JSONL transcript into knowledge.
+
+    Parses the transcript offline, extracts key moments (commits, decisions,
+    user instructions, file writes), and stores them in the knowledge table.
+    The agent never has to touch raw JSONL.
+
+    PATH is the path to the .jsonl transcript file.
+    """
+    from cairn_ai.ingest import ingest_transcript
+
+    click.echo(f"Ingesting {path}...")
+    result = ingest_transcript(path, agent)
+    click.echo(result)
+
+
+@main.command()
+@click.option("--agent", default="", help="Filter to specific agent")
+def transcripts(agent: str):
+    """List available Claude Code transcript files."""
+    from cairn_ai.ingest import find_transcripts
+
+    results = find_transcripts()
+    if not results:
+        click.echo("No transcript files found in ~/.claude/projects/")
+        return
+
+    click.echo(f"Found {len(results)} transcript(s):\n")
+    for r in results:
+        size = f"{r['size_kb']:.0f}KB"
+        click.echo(f"  {r['modified']}  {size:>8}  {r['path']}")
+    click.echo(f"\nIngest with: cairn ingest <path> [--agent <name>]")
+
+
+@main.command()
+@click.option("--agent", default="", help="Filter to specific agent")
+@click.option("--days", default=7, help="Keep journals newer than this many days")
+@click.option("--execute", is_flag=True, help="Actually rotate (default is dry run)")
+def rotate(agent: str, days: int, execute: bool):
+    """Rotate old journal files into archive.
+
+    Extracts key findings into the knowledge table, then moves
+    old journals to archive/ (cold storage, never deleted).
+    Default is dry run — pass --execute to actually rotate.
+    """
+    from cairn_ai.rotate import rotate_journals
+
+    result = rotate_journals(agent=agent, days=days, dry_run=not execute)
+    click.echo(result)
+
+
+@main.command()
 def verify():
     """Verify integrity of installed cairn files."""
     from cairn_ai.integrity import verify_integrity

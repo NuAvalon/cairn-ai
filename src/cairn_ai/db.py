@@ -150,6 +150,33 @@ def _init_schema(conn: sqlite3.Connection):
         )
     """)
 
+    # Knowledge entries (mind palace seed — extracted findings, tagged)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS knowledge (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            agent TEXT NOT NULL DEFAULT 'default',
+            ts TEXT NOT NULL,
+            title TEXT NOT NULL,
+            content TEXT NOT NULL,
+            tags TEXT DEFAULT '',
+            source TEXT DEFAULT ''
+        )
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_knowledge_agent ON knowledge(agent)
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_knowledge_tags ON knowledge(tags)
+    """)
+
+    # FTS index over knowledge
+    conn.execute("""
+        CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_fts USING fts5(
+            title, content, tags,
+            content='knowledge', content_rowid='id'
+        )
+    """)
+
     # Triggers to keep FTS in sync
     conn.execute("""
         CREATE TRIGGER IF NOT EXISTS handoffs_ai AFTER INSERT ON handoffs BEGIN
@@ -162,6 +189,13 @@ def _init_schema(conn: sqlite3.Connection):
         CREATE TRIGGER IF NOT EXISTS journal_ai AFTER INSERT ON journal_entries BEGIN
             INSERT INTO journal_fts(rowid, task, finding)
             VALUES (new.id, new.task, new.finding);
+        END
+    """)
+
+    conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS knowledge_ai AFTER INSERT ON knowledge BEGIN
+            INSERT INTO knowledge_fts(rowid, title, content, tags)
+            VALUES (new.id, new.title, new.content, new.tags);
         END
     """)
 
