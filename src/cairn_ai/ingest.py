@@ -111,7 +111,8 @@ def _extract_from_record(record: dict, agent: str) -> list[dict]:
                     has_tool_results = True
                     tr_content = block.get("content", "")
                     if isinstance(tr_content, str) and len(tr_content) > 100:
-                        if "error" in tr_content.lower()[:200] or "traceback" in tr_content.lower()[:200]:
+                        lower_200 = tr_content.lower()[:200]
+                        if re.search(r'\berror\b', lower_200) or "traceback" in lower_200:
                             entries.append({
                                 "agent": agent,
                                 "ts": ts,
