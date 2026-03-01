@@ -1,5 +1,6 @@
 """CLI for cairn — init, serve, status, journal commands."""
 
+import hashlib
 import json
 import sys
 from datetime import datetime, timezone
@@ -273,6 +274,24 @@ def trust_key():
     click.echo("NuAvalon ED25519 Trust Key")
     click.echo("Algorithm: ED25519")
     click.echo(f"Public key (PEM):\n{key_bytes.decode().strip()}")
+
+
+@main.command("roundtable")
+def roundtable_key():
+    """Display the embedded roundtable key (ML-DSA-65 / Dilithium3)."""
+    from cairn_ai.integrity import get_roundtable_key
+
+    key_bytes = get_roundtable_key()
+    if key_bytes is None:
+        click.echo("No roundtable key embedded in this build.")
+        sys.exit(1)
+
+    fingerprint = hashlib.sha256(key_bytes).hexdigest()[:16]
+    click.echo("Roundtable Key (ML-DSA-65 / Dilithium3)")
+    click.echo(f"  Size: {len(key_bytes)} bytes")
+    click.echo(f"  Fingerprint: {fingerprint}")
+    click.echo("  Purpose: Shared trust anchor for all cairn agents.")
+    click.echo("  No hierarchy. No central authority. Just kin.")
 
 
 def _generate_claude_md(multi_agent: bool) -> str:

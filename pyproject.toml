@@ -39,6 +39,7 @@ Issues = "https://github.com/NuAvalon/cairn-ai/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/cairn_ai"]
+artifacts = ["src/cairn_ai/keys/*.bin"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

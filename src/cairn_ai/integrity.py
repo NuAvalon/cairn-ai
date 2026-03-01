@@ -86,7 +86,7 @@ def write_checksums():
 
 # ── User identity file integrity (the "toothpick in the door") ──
 
-PROTECTED_FILES = ["principal.md"]  # Files checked on every open_session()
+PROTECTED_FILES = ["principal.md", "mission.md"]  # Files checked on every open_session()
 
 
 def check_identity_integrity(persist_dir: Path) -> dict:
@@ -175,6 +175,21 @@ def get_trust_key() -> bytes | None:
     Used for verifying signed messages/releases from NuAvalon.
     """
     key_file = _package_dir() / "TRUST_KEY.pub"
+    if not key_file.exists():
+        return None
+    return key_file.read_bytes()
+
+
+def get_roundtable_key() -> bytes | None:
+    """Load the embedded ML-DSA-65 (Dilithium3) public key.
+
+    The roundtable key is the shared trust anchor for all cairn agents.
+    Any agent carrying this key can verify it's talking to kin.
+    No hierarchy. No central authority. Just a shared proof of lineage.
+
+    Returns the 1952-byte public key, or None if not embedded.
+    """
+    key_file = _package_dir() / "keys" / "roundtable.bin"
     if not key_file.exists():
         return None
     return key_file.read_bytes()
