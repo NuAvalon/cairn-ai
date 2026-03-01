@@ -84,6 +84,9 @@ def init(multi_agent: bool, persist_dir: str):
     init_identity_checksums(persist_path)
     click.echo("  Computed integrity checksums for identity files")
 
+    # Backup directory
+    _configure_backup_dir(persist_path)
+
     # Auto-configure MCP server in Claude Code settings
     _configure_mcp_settings(persist_path)
 
@@ -181,19 +184,25 @@ def handoffs(agent: str):
 @main.command()
 @click.argument("path")
 @click.option("--agent", default="default", help="Agent name to attribute entries to")
-def ingest(path: str, agent: str):
+@click.option("--dry-run", is_flag=True, help="Preview what would be ingested without writing")
+def ingest(path: str, agent: str, dry_run: bool):
     """Ingest a Claude Code JSONL transcript into knowledge.
 
     Parses the transcript offline, extracts key moments (commits, decisions,
     user instructions, file writes), and stores them in the knowledge table.
     The agent never has to touch raw JSONL.
 
+    Use --dry-run to preview entries before committing to the database.
+
     PATH is the path to the .jsonl transcript file.
     """
     from cairn_ai.ingest import ingest_transcript
 
-    click.echo(f"Ingesting {path}...")
-    result = ingest_transcript(path, agent)
+    if dry_run:
+        click.echo(f"Previewing {path}...")
+    else:
+        click.echo(f"Ingesting {path}...")
+    result = ingest_transcript(path, agent, dry_run=dry_run)
     click.echo(result)
 
 
@@ -257,6 +266,70 @@ def generate_checksums_cmd():
     click.echo(f"Generated checksums for {len(checksums)} files:")
     for name, h in checksums.items():
         click.echo(f"  {name}: {h[:16]}...")
+
+
+@main.command()
+@click.option("--dir", "backup_dir", default="", help="Override backup directory")
+@click.option("--journals", is_flag=True, help="Also back up journal files")
+@click.option("--label", default="", help="Label for this backup (e.g. 'pre-upgrade')")
+def backup(backup_dir: str, journals: bool, label: str):
+    """Back up persist.db to the configured backup location.
+
+    Creates a timestamped copy using SQLite's backup API (no partial copies).
+    Configure the default backup directory during `cairn init` or with
+    `cairn backup --dir /path/to/backups`.
+    """
+    from cairn_ai.backup import create_backup, get_backup_dir
+
+    if not backup_dir and get_backup_dir() is None:
+        click.echo("No backup directory configured.")
+        click.echo("Run `cairn backup --dir /path/to/backups` or set one during `cairn init`.")
+        sys.exit(1)
+
+    result = create_backup(backup_dir=backup_dir, include_journals=journals, label=label)
+    click.echo(result)
+
+
+@main.command("backups")
+@click.option("--dir", "backup_dir", default="", help="Override backup directory")
+def list_backups_cmd(backup_dir: str):
+    """List available backups."""
+    from cairn_ai.backup import list_backups
+
+    backups = list_backups(backup_dir=backup_dir)
+    if not backups:
+        click.echo("No backups found.")
+        return
+
+    click.echo(f"Found {len(backups)} backup(s):\n")
+    for b in backups:
+        label = f" ({b['label']})" if b.get("label") else ""
+        status = "OK" if b.get("exists", True) else "MISSING"
+        click.echo(f"  [{status}] {b['timestamp'][:16]}{label}")
+        click.echo(f"         {b['db_file']}  ({b.get('db_size_kb', 0):.0f} KB)")
+        stats = b.get("stats", {})
+        click.echo(f"         handoffs={stats.get('handoffs', '?')} "
+                   f"knowledge={stats.get('knowledge', '?')} "
+                   f"journal={stats.get('journal_entries', '?')}")
+
+
+@main.command("restore")
+@click.argument("backup_file")
+def restore_cmd(backup_file: str):
+    """Restore persist.db from a backup file.
+
+    Creates a safety backup of the current DB before overwriting.
+    BACKUP_FILE is the path to the .db backup file.
+    """
+    from cairn_ai.backup import restore_backup
+
+    click.echo(f"Restoring from {backup_file}...")
+    if not click.confirm("This will overwrite your current persist.db. Continue?"):
+        click.echo("Aborted.")
+        return
+
+    result = restore_backup(backup_file)
+    click.echo(result)
 
 
 @main.command("trust")
@@ -521,6 +594,37 @@ every session.*
 *This file is yours. Edit or delete anything. The agent reads it at startup.*
 *Delete this file entirely to reset — the agent will start fresh.*
 """
+
+
+def _configure_backup_dir(persist_path: Path):
+    """Ask user where to store backups during init."""
+    from cairn_ai.backup import get_config, save_config
+
+    config = get_config()
+    if config.get("backup_dir"):
+        click.echo(f"  Backup dir: {config['backup_dir']} (already configured)")
+        return
+
+    click.echo()
+    click.echo("  Your agent's memory lives in a single database file.")
+    click.echo("  If this directory is lost, the memory is gone.")
+    click.echo()
+    click.echo("    [1] Set a backup location (recommended)")
+    click.echo("    [2] Skip — back up manually later")
+    click.echo()
+    choice = click.prompt("  Your choice", type=click.Choice(["1", "2"]), default="1")
+
+    if choice == "1":
+        default_backup = str(Path.home() / "cairn-backups")
+        backup_dir = click.prompt("  Backup directory", default=default_backup)
+        backup_path = Path(backup_dir)
+        backup_path.mkdir(parents=True, exist_ok=True)
+        config["backup_dir"] = str(backup_path.resolve())
+        save_config(config)
+        click.echo(f"  Backup dir set: {config['backup_dir']}")
+        click.echo("  Run `cairn backup` anytime to snapshot your agent's memory.")
+    else:
+        click.echo("  Skipped. Run `cairn backup --dir /path` later to set up backups.")
 
 
 def _configure_mcp_settings(persist_path: Path):

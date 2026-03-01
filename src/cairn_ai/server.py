@@ -158,11 +158,27 @@ def open_session(agent: str = "default") -> str:
     if integrity["status"] == "alert":
         integrity_msg = "\n\n" + "\n".join(integrity["alerts"])
 
+    # Check backup status
+    backup_msg = ""
+    try:
+        from cairn_ai.backup import get_backup_dir, list_backups
+
+        if get_backup_dir() is None:
+            backup_msg = "\n\nBACKUP: No backup directory configured. Your agent's memory is not backed up. Ask your principal to run `cairn backup --dir /path` to set one up."
+        else:
+            backups = list_backups()
+            if not backups:
+                backup_msg = "\n\nBACKUP: Backup directory configured but no backups exist yet. Consider asking your principal to run `cairn backup`."
+    except Exception:
+        pass  # Backup check is best-effort
+
     result = f"Session opened for {agent} at {now[:16]} | Glyph: {glyph_num}"
     if warning:
         result += f"\n\nWARNING: {warning}"
     if integrity_msg:
         result += integrity_msg
+    if backup_msg:
+        result += backup_msg
     return result
 
 
