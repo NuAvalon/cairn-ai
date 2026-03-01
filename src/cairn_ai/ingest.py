@@ -3,6 +3,10 @@
 Reads JSONL conversation logs, extracts key moments (tool calls, decisions,
 user instructions), and stores them as timestamped knowledge entries.
 The agent never touches raw JSONL — this runs offline via CLI.
+
+Noise reduction: filters out mechanical navigation ("let me read the file"),
+benign errors (file not found), temp file writes, and short low-signal
+assistant responses. Good inputs = good outputs.
 """
 
 import json
@@ -13,12 +17,69 @@ from pathlib import Path
 from cairn_ai.db import get_db
 
 
-def ingest_transcript(path: str, agent: str = "default") -> str:
+# --- Noise filters ---
+
+# File writes: only track files with these extensions
+_NOTABLE_EXTENSIONS = {
+    ".py", ".js", ".ts", ".tsx", ".jsx", ".rs", ".go", ".java",
+    ".json", ".yaml", ".yml", ".toml", ".md", ".html", ".css",
+    ".sh", ".sql", ".env", ".cfg",
+}
+
+# Skip file writes inside these directories
+_NOISE_DIRS = {
+    "__pycache__", "node_modules", ".git", ".venv", "venv",
+    ".mypy_cache", ".pytest_cache", "dist", "build", ".tox",
+    ".egg-info", ".cache", "tmp", "temp",
+}
+
+# High-signal decision markers — substantive thinking
+_SUBSTANTIVE_MARKERS = [
+    "root cause", "the fix", "found the bug", "the issue is",
+    "the problem is", "my recommendation", "the approach",
+    "design decision", "trade-off", "architecture",
+    "breaking change", "the solution", "key insight",
+    "this works because", "the reason", "critical",
+    "we should", "the right way", "this breaks",
+]
+
+# Low-signal decision markers — need more content to qualify
+_MECHANICAL_MARKERS = [
+    "i'll ", "i will ", "this means ",
+]
+
+# Skip assistant messages that are just navigation/routing
+_SKIP_PREFIXES = [
+    "let me read", "let me check", "let me search", "let me look",
+    "let me find", "let me explore", "let me see", "let me open",
+    "i'll read the", "i'll look at", "i'll search",
+    "searching for", "reading the file", "looking at the",
+    "now let me", "first, let me", "good, ", "ok, ",
+]
+
+# Benign errors to skip (framework noise, not real bugs)
+_BENIGN_ERROR_PATTERNS = [
+    "no such file", "file not found", "not found:",
+    "permission denied", "is a directory", "not a directory",
+    "no matches found", "command not found",
+    "does not exist", "already exists",
+    "no results", "0 matches", "empty result",
+]
+
+# Minimum content lengths
+_MIN_USER_LEN = 30
+_MIN_DECISION_LEN = 150      # Low-signal markers need substantial content
+_MIN_SUBSTANTIVE_LEN = 80    # High-signal markers can be shorter
+
+
+def ingest_transcript(path: str, agent: str = "default",
+                      dry_run: bool = False) -> str:
     """Parse a Claude Code JSONL transcript and store highlights.
 
     Args:
         path: Path to the JSONL transcript file
         agent: Agent name to attribute entries to
+        dry_run: If True, show what would be ingested without writing to DB
 
     Returns:
         Summary of what was ingested.
@@ -35,6 +96,14 @@ def ingest_transcript(path: str, agent: str = "default") -> str:
     if not entries:
         return f"No notable entries found in {transcript_path.name}"
 
+    if dry_run:
+        lines = [f"DRY RUN — {len(entries)} entries from {transcript_path.name}:\n"]
+        for e in entries:
+            tag = e["tags"].split(",")[-1]
+            lines.append(f"  [{tag:>16}] {e['title'][:90]}")
+        lines.append(_summary_line(entries, transcript_path.name, prefix="Would ingest"))
+        return "\n".join(lines)
+
     # Store in knowledge table
     conn = get_db()
     stored = 0
@@ -50,13 +119,21 @@ def ingest_transcript(path: str, agent: str = "default") -> str:
     conn.commit()
     conn.close()
 
+    return _summary_line(entries, transcript_path.name, prefix="Ingested")
+
+
+def _summary_line(entries: list[dict], filename: str, prefix: str) -> str:
+    """Build a summary line from entries."""
+    counts = {}
+    for tag_key in ("decision", "user-instruction", "commit", "file-write", "error"):
+        counts[tag_key] = sum(1 for e in entries if tag_key in e["tags"])
     return (
-        f"Ingested {stored} entries from {transcript_path.name}\n"
-        f"  Decisions: {sum(1 for e in entries if 'decision' in e['tags'])}\n"
-        f"  User instructions: {sum(1 for e in entries if 'user-instruction' in e['tags'])}\n"
-        f"  Commits: {sum(1 for e in entries if 'commit' in e['tags'])}\n"
-        f"  File writes: {sum(1 for e in entries if 'file-write' in e['tags'])}\n"
-        f"  Findings: {sum(1 for e in entries if 'finding' in e['tags'])}"
+        f"{prefix} {len(entries)} entries from {filename}\n"
+        f"  Decisions: {counts['decision']}\n"
+        f"  User instructions: {counts['user-instruction']}\n"
+        f"  Commits: {counts['commit']}\n"
+        f"  File writes: {counts['file-write']}\n"
+        f"  Errors: {counts['error']}"
     )
 
 
@@ -66,7 +143,7 @@ def _parse_transcript(path: Path, agent: str) -> list[dict]:
     seen_titles = set()  # Dedup
 
     with open(path) as f:
-        for line_num, line in enumerate(f):
+        for line in f:
             line = line.strip()
             if not line:
                 continue
@@ -77,12 +154,53 @@ def _parse_transcript(path: Path, agent: str) -> list[dict]:
 
             extracted = _extract_from_record(record, agent)
             for entry in extracted:
-                # Dedup by title
                 if entry["title"] not in seen_titles:
                     seen_titles.add(entry["title"])
                     entries.append(entry)
 
     return entries
+
+
+def _is_notable_file(file_path: str) -> bool:
+    """Check if a file write is worth recording."""
+    p = Path(file_path)
+    # Skip files in noise directories
+    if set(p.parts) & _NOISE_DIRS:
+        return False
+    return p.suffix.lower() in _NOTABLE_EXTENSIONS
+
+
+def _is_benign_error(text: str) -> bool:
+    """Check if an error is framework noise rather than a real bug."""
+    lower = text.lower()[:300]
+    return any(pat in lower for pat in _BENIGN_ERROR_PATTERNS)
+
+
+def _is_mechanical(text: str) -> bool:
+    """Check if assistant text is just navigation/routing, not a decision."""
+    lower = text.lower().strip()
+    return any(lower.startswith(p) for p in _SKIP_PREFIXES)
+
+
+def _extract_commit_msg(cmd: str) -> str:
+    """Extract commit message from various git commit formats."""
+    # Heredoc: -m "$(cat <<'EOF'\nmessage here\n..."
+    m = re.search(r"EOF['\"]?\s*\n(.+?)(?:\nEOF|\nCo-Authored|\Z)",
+                  cmd, re.DOTALL)
+    if m:
+        return m.group(1).strip()[:200]
+
+    # Simple: -m "message" or -m 'message'
+    m = re.search(r'-m\s+["\']([^"\']+)["\']', cmd)
+    if m:
+        return m.group(1).strip()[:200]
+
+    # Fallback: first line after the commit command
+    m = re.search(r'git commit.*?-m\s+(.*)', cmd)
+    if m:
+        return m.group(1).strip()[:200]
+
+    return "(commit message not parsed)"
 
 
 def _extract_from_record(record: dict, agent: str) -> list[dict]:
@@ -98,11 +216,9 @@ def _extract_from_record(record: dict, agent: str) -> list[dict]:
     if not isinstance(msg, dict):
         msg = {}
     role = msg.get("role", "") or record.get("type", "")
-    msg_type = record.get("type", "")
 
-    # User messages — look for instructions, decisions, and tool results
-    if role == "human" or role == "user":
-        # Check if this is a tool_result message
+    # --- User messages: instructions and real errors ---
+    if role in ("human", "user"):
         content_blocks = msg.get("content", [])
         has_tool_results = False
         if isinstance(content_blocks, list):
@@ -111,27 +227,30 @@ def _extract_from_record(record: dict, agent: str) -> list[dict]:
                     has_tool_results = True
                     tr_content = block.get("content", "")
                     if isinstance(tr_content, str) and len(tr_content) > 100:
+                        if _is_benign_error(tr_content):
+                            continue
                         lower_200 = tr_content.lower()[:200]
                         if re.search(r'\berror\b', lower_200) or "traceback" in lower_200:
                             entries.append({
                                 "agent": agent,
                                 "ts": ts,
-                                "title": f"Error encountered: {tr_content[:100]}",
+                                "title": f"Error: {tr_content[:100]}",
                                 "content": tr_content[:500],
                                 "tags": "transcript,finding,error",
                             })
 
-        # If not a tool result, check for user instructions
         if not has_tool_results:
             content = _get_text_content(msg)
-            if content and len(content) > 30:
+            if content and len(content) > _MIN_USER_LEN:
                 instruction_markers = [
-                    "please ", "can you ", "make sure ", "don't ", "always ", "never ",
-                    "i want ", "let's ", "we need ", "go ahead", "approved",
-                    "fix ", "add ", "change ", "update ", "remove ", "implement",
+                    "please ", "can you ", "make sure ", "don't ", "always ",
+                    "never ", "i want ", "let's ", "we need ", "go ahead",
+                    "approved", "fix ", "add ", "change ", "update ",
+                    "remove ", "implement",
                 ]
                 lower = content.lower()
-                if any(lower.startswith(m) or f" {m}" in lower[:100] for m in instruction_markers):
+                if any(lower.startswith(m) or f" {m}" in lower[:100]
+                       for m in instruction_markers):
                     entries.append({
                         "agent": agent,
                         "ts": ts,
@@ -140,18 +259,25 @@ def _extract_from_record(record: dict, agent: str) -> list[dict]:
                         "tags": "transcript,user-instruction",
                     })
 
-    # Assistant messages — look for decisions and findings
+    # --- Assistant messages: substantive decisions, commits, notable writes ---
     elif role == "assistant":
         content = _get_text_content(msg)
-        if content and len(content) > 50:
-            # Detect decisions
-            decision_markers = [
-                "i'll ", "i will ", "the approach ", "my recommendation ",
-                "the issue is ", "root cause ", "the fix ",
-                "this means ", "the problem ", "found the bug",
-            ]
+        if content and not _is_mechanical(content):
             lower = content.lower()
-            if any(m in lower[:200] for m in decision_markers):
+
+            # Check signal quality
+            has_substance = any(m in lower[:300] for m in _SUBSTANTIVE_MARKERS)
+            has_mechanical = any(m in lower[:200] for m in _MECHANICAL_MARKERS)
+
+            if has_substance and len(content) > _MIN_SUBSTANTIVE_LEN:
+                entries.append({
+                    "agent": agent,
+                    "ts": ts,
+                    "title": f"Decision: {content[:120]}",
+                    "content": content[:500],
+                    "tags": "transcript,decision",
+                })
+            elif has_mechanical and len(content) > _MIN_DECISION_LEN:
                 entries.append({
                     "agent": agent,
                     "ts": ts,
@@ -160,7 +286,7 @@ def _extract_from_record(record: dict, agent: str) -> list[dict]:
                     "tags": "transcript,decision",
                 })
 
-        # Look for tool use in content blocks (nested under message.content)
+        # Tool use blocks
         content_blocks = msg.get("content", [])
         if isinstance(content_blocks, list):
             for block in content_blocks:
@@ -170,15 +296,11 @@ def _extract_from_record(record: dict, agent: str) -> list[dict]:
                 tool_name = block.get("name", "")
                 tool_input = block.get("input", {})
 
-                # Git commits
+                # Git commits — always notable
                 if tool_name == "Bash":
                     cmd = tool_input.get("command", "")
-                    if "git commit" in cmd:
-                        # Extract commit message
-                        msg_match = re.search(r'-m ["\'](.+?)["\']', cmd)
-                        if not msg_match:
-                            msg_match = re.search(r"EOF\n(.+?)(?:\n|EOF)", cmd, re.DOTALL)
-                        commit_msg = msg_match.group(1)[:200] if msg_match else cmd[:200]
+                    if "git commit" in cmd and "--amend" not in cmd:
+                        commit_msg = _extract_commit_msg(cmd)
                         entries.append({
                             "agent": agent,
                             "ts": ts,
@@ -187,14 +309,14 @@ def _extract_from_record(record: dict, agent: str) -> list[dict]:
                             "tags": "transcript,commit",
                         })
 
-                # File writes
+                # File writes — only notable files
                 elif tool_name == "Write":
                     file_path = tool_input.get("file_path", "")
-                    if file_path:
+                    if file_path and _is_notable_file(file_path):
                         entries.append({
                             "agent": agent,
                             "ts": ts,
-                            "title": f"Created: {file_path}",
+                            "title": f"Created: {Path(file_path).name}",
                             "content": f"File created: {file_path}",
                             "tags": "transcript,file-write",
                         })
@@ -204,12 +326,10 @@ def _extract_from_record(record: dict, agent: str) -> list[dict]:
 
 def _get_text_content(record: dict) -> str:
     """Extract text from various record formats."""
-    # Direct content string
     content = record.get("content", "")
     if isinstance(content, str):
         return content.strip()
 
-    # Content blocks array
     if isinstance(content, list):
         texts = []
         for block in content:
@@ -220,7 +340,6 @@ def _get_text_content(record: dict) -> str:
                 texts.append(block)
         return " ".join(texts).strip()
 
-    # Message field
     message = record.get("message", "")
     if isinstance(message, str):
         return message.strip()
@@ -243,7 +362,6 @@ def find_transcripts(project_dir: str = "") -> list[dict]:
     if project_dir:
         search_paths.append(Path(project_dir))
     else:
-        # Common Claude Code transcript locations
         home = Path.home()
         claude_dir = home / ".claude" / "projects"
         if claude_dir.exists():
