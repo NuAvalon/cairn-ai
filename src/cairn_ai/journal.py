@@ -59,6 +59,19 @@ def write_journal(agent: str, status: str, task: str, finding: str, timestamp: s
             f.write(f"# {agent.title()} Journal — {date}\n\n")
         f.write(entry)
 
+    # Mirror to DB for FTS indexing
+    try:
+        from cairn_ai.db import get_db
+        conn = get_db()
+        conn.execute(
+            "INSERT INTO journal_entries (agent, ts, status, task, finding) VALUES (?, ?, ?, ?, ?)",
+            (agent, timestamp, status, task, finding),
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass  # Journal files are primary — DB index is best-effort
+
 
 def read_journal_file(agent: str, date: str = "") -> str:
     """Read an agent's journal for a given date. Returns markdown content."""

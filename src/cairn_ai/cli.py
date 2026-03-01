@@ -306,6 +306,7 @@ This is not optional. The mission is the first thing you read, every session, be
 ## During Work
 - Call `set_status(current_task="...", last_finding="...")` every ~30 tool calls
 - This auto-journals your progress for crash recovery
+- Use `search_memory(query="...")` to find anything from past sessions
 
 ## Before Session Ends
 ```
@@ -313,6 +314,8 @@ This is not optional. The mission is the first thing you read, every session, be
 2. write_handoff(summary="...", accomplished="...", pending="...", discoveries="...")
 ```
 This saves your context for the next session and marks a clean close.
+Write handoffs with specific details — what you did, what's unfinished, what you discovered.
+The more precise your handoff, the better the next you can continue the work.
 
 ## If Context Compresses (autocompaction)
 ```
