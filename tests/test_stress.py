@@ -1,18 +1,15 @@
-"""Stress test for cairn — QA before Gumroad listing.
+"""Stress test for cairn — QA before public launch.
 
 Tests realistic usage patterns:
 1. Multi-agent concurrent access (4 agents, rapid status updates)
-2. High-volume messaging (100+ messages, mark_read in batch)
-3. Large concept maps (50+ concepts with links and perspectives)
-4. Recovery flows (crash → recovery → verify integrity)
-5. Edge cases (Unicode, long strings, special characters)
-6. Journal accumulation (30 days simulated)
-7. Knowledge volume (100+ entries with search)
+2. High-volume status updates (200 rapid writes)
+3. Recovery flows (crash → recovery → verify integrity)
+4. Edge cases (Unicode, long strings, special characters)
+5. Journal accumulation (30 days simulated)
+6. DB size sanity after heavy use
 """
 
-import os
 import sqlite3
-import tempfile
 import time
 import threading
 from pathlib import Path
@@ -84,45 +81,6 @@ class TestConcurrentAccess:
         conn.close()
         assert len(rows) == 4
 
-    def test_concurrent_messages(self, fresh_db):
-        """Multiple agents sending messages simultaneously."""
-        from cairn_ai.db import get_db
-
-        errors = []
-
-        def send_messages(from_agent, to_agent, count):
-            try:
-                for i in range(count):
-                    conn = get_db()
-                    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-                    conn.execute(
-                        "INSERT INTO messages (from_agent, to_agent, subject, body, created_at) "
-                        "VALUES (?, ?, ?, ?, ?)",
-                        (from_agent, to_agent, f"Msg {i}", f"Body {i}", now),
-                    )
-                    conn.commit()
-                    conn.close()
-            except Exception as e:
-                errors.append((from_agent, str(e)))
-
-        threads = [
-            threading.Thread(target=send_messages, args=("archie", "athena", 25)),
-            threading.Thread(target=send_messages, args=("athena", "archie", 25)),
-            threading.Thread(target=send_messages, args=("apollo", "hypatia", 25)),
-            threading.Thread(target=send_messages, args=("hypatia", "apollo", 25)),
-        ]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join(timeout=30)
-
-        assert not errors, f"Message errors: {errors}"
-
-        conn = get_db()
-        count = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
-        conn.close()
-        assert count == 100
-
 
 # ── 2. High volume ────────────────────────────────────────────────────────────
 
@@ -151,164 +109,8 @@ class TestHighVolume:
         assert row[0] == "Task 199"
         assert row[1] == 199
 
-    def test_500_messages_with_bulk_read(self, fresh_db):
-        """500 messages, then bulk mark-read."""
-        from cairn_ai.db import get_db
 
-        conn = get_db()
-        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        for i in range(500):
-            conn.execute(
-                "INSERT INTO messages (from_agent, to_agent, subject, body, created_at) "
-                "VALUES (?, ?, ?, ?, ?)",
-                ("archie", "athena", f"Subject {i}", f"Body {i}", now),
-            )
-        conn.commit()
-
-        # Count unread
-        unread = conn.execute(
-            "SELECT COUNT(*) FROM messages WHERE to_agent = 'athena' AND is_read = 0"
-        ).fetchone()[0]
-        assert unread == 500
-
-        # Bulk mark read
-        conn.execute(
-            "UPDATE messages SET is_read = 1 WHERE to_agent = 'athena' AND is_read = 0"
-        )
-        conn.commit()
-
-        unread_after = conn.execute(
-            "SELECT COUNT(*) FROM messages WHERE to_agent = 'athena' AND is_read = 0"
-        ).fetchone()[0]
-        conn.close()
-        assert unread_after == 0
-
-    def test_100_knowledge_entries(self, fresh_db):
-        """100 knowledge entries with varying topics and tags."""
-        from cairn_ai.db import get_db
-
-        topics = ["research", "decision", "lesson", "architecture", "bug"]
-        conn = get_db()
-        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        for i in range(100):
-            conn.execute(
-                "INSERT INTO knowledge (topic, title, content, tags, agent, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (
-                    topics[i % len(topics)],
-                    f"Entry {i}: {topics[i % len(topics)]}",
-                    f"Content for entry {i}. " * 20,  # ~400 chars each
-                    f"tag{i % 5},tag{i % 3}",
-                    ["archie", "apollo", "athena", "hypatia"][i % 4],
-                    now,
-                ),
-            )
-        conn.commit()
-
-        count = conn.execute("SELECT COUNT(*) FROM knowledge").fetchone()[0]
-        assert count == 100
-
-        # Topic filter
-        research = conn.execute(
-            "SELECT COUNT(*) FROM knowledge WHERE topic = 'research'"
-        ).fetchone()[0]
-        assert research == 20
-
-        conn.close()
-
-
-# ── 3. Large concept maps ─────────────────────────────────────────────────────
-
-class TestLargeConceptMap:
-    def test_50_concepts_with_links(self, fresh_db):
-        """50 concepts with inter-links and perspectives."""
-        from cairn_ai.db import get_db
-
-        conn = get_db()
-        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-        # Create 50 concepts
-        for i in range(50):
-            conn.execute(
-                "INSERT INTO concepts (name, summary, domain, state, version, agent, created_at, updated_at) "
-                "VALUES (?, ?, ?, 'active', 1, 'athena', ?, ?)",
-                (f"Concept {i}", f"Summary for concept {i}", ["ml", "trading", "infrastructure"][i % 3], now, now),
-            )
-
-        # Create 100 links (each concept linked to 2 others)
-        for i in range(50):
-            for j in [1, 2]:
-                target = (i + j) % 50
-                conn.execute(
-                    "INSERT INTO concept_links (from_concept, to_concept, link_type, agent, created_at) "
-                    "VALUES (?, ?, ?, 'athena', ?)",
-                    (f"Concept {i}", f"Concept {target}", "related", now),
-                )
-
-        # Add perspectives
-        for i in range(50):
-            conn.execute(
-                "INSERT INTO concept_perspectives (concept_name, perspective, agent, created_at) "
-                "VALUES (?, ?, ?, ?)",
-                (f"Concept {i}", f"Athena's view on concept {i}", "athena", now),
-            )
-
-        conn.commit()
-
-        concepts = conn.execute("SELECT COUNT(*) FROM concepts").fetchone()[0]
-        links = conn.execute("SELECT COUNT(*) FROM concept_links").fetchone()[0]
-        perspectives = conn.execute("SELECT COUNT(*) FROM concept_perspectives").fetchone()[0]
-
-        conn.close()
-
-        assert concepts == 50
-        assert links == 100
-        assert perspectives == 50
-
-    def test_concept_versioning_at_scale(self, fresh_db):
-        """One concept updated 20 times — verify version history."""
-        from cairn_ai.db import get_db
-
-        conn = get_db()
-        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-        conn.execute(
-            "INSERT INTO concepts (name, summary, version, agent, created_at, updated_at) "
-            "VALUES ('Evolving Idea', 'v1', 1, 'archie', ?, ?)",
-            (now, now),
-        )
-        conn.execute(
-            "INSERT INTO concept_history (concept_name, version, summary, agent) "
-            "VALUES ('Evolving Idea', 1, 'v1', 'archie')",
-        )
-
-        for v in range(2, 21):
-            conn.execute(
-                "UPDATE concepts SET summary = ?, version = ?, updated_at = ? WHERE name = 'Evolving Idea'",
-                (f"v{v}", v, now),
-            )
-            conn.execute(
-                "INSERT INTO concept_history (concept_name, version, summary, agent) "
-                "VALUES ('Evolving Idea', ?, ?, ?)",
-                (v, f"v{v}", ["archie", "apollo", "athena"][v % 3]),
-            )
-
-        conn.commit()
-
-        current = conn.execute(
-            "SELECT version, summary FROM concepts WHERE name = 'Evolving Idea'"
-        ).fetchone()
-        history = conn.execute(
-            "SELECT COUNT(*) FROM concept_history WHERE concept_name = 'Evolving Idea'"
-        ).fetchone()[0]
-
-        conn.close()
-        assert current[0] == 20
-        assert current[1] == "v20"
-        assert history == 20
-
-
-# ── 4. Recovery flows ─────────────────────────────────────────────────────────
+# ── 3. Recovery flows ─────────────────────────────────────────────────────────
 
 class TestRecoveryFlows:
     def test_crash_and_recovery(self, fresh_db):
@@ -369,76 +171,47 @@ class TestRecoveryFlows:
         assert "Second entry" in content
 
 
-# ── 5. Edge cases ─────────────────────────────────────────────────────────────
+# ── 4. Edge cases ─────────────────────────────────────────────────────────────
 
 class TestEdgeCases:
-    def test_unicode_in_all_fields(self, fresh_db):
-        """Unicode characters in every text field."""
+    def test_unicode_in_status(self, fresh_db):
+        """Unicode characters in status fields."""
         from cairn_ai.db import get_db
 
         conn = get_db()
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-        # Status with emoji/CJK/Arabic
         conn.execute(
             "INSERT OR REPLACE INTO agent_status (agent, status, current_task, last_finding, updated_at) "
             "VALUES ('athena', 'active', '🦉 建造 البناء', '発見 اكتشاف 🔍', ?)",
             (now,),
         )
-
-        # Message with unicode
-        conn.execute(
-            "INSERT INTO messages (from_agent, to_agent, subject, body, created_at) "
-            "VALUES ('archie', 'athena', '件名 الموضوع', 'Содержание 内容 🌍', ?)",
-            (now,),
-        )
-
-        # Concept with unicode
-        conn.execute(
-            "INSERT INTO concepts (name, summary, created_at, updated_at) "
-            "VALUES ('概念 مفهوم Концепция', 'Résumé 摘要 ملخص', ?, ?)",
-            (now, now),
-        )
-
         conn.commit()
 
-        # Verify round-trip
         row = conn.execute(
             "SELECT current_task FROM agent_status WHERE agent = 'athena'"
         ).fetchone()
         assert "🦉" in row[0]
         assert "建造" in row[0]
-
-        msg = conn.execute(
-            "SELECT body FROM messages WHERE to_agent = 'athena'"
-        ).fetchone()
-        assert "Содержание" in msg[0]
-        assert "🌍" in msg[0]
-
-        concept = conn.execute(
-            "SELECT summary FROM concepts WHERE name LIKE '%概念%'"
-        ).fetchone()
-        assert "Résumé" in concept[0]
-
         conn.close()
 
-    def test_very_long_strings(self, fresh_db):
-        """10KB+ strings in message body and concept summary."""
+    def test_very_long_handoff(self, fresh_db):
+        """10KB+ strings in handoff summary."""
         from cairn_ai.db import get_db
 
         conn = get_db()
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-        long_body = "A" * 50000  # 50KB
+        long_summary = "A" * 50000  # 50KB
         conn.execute(
-            "INSERT INTO messages (from_agent, to_agent, subject, body, created_at) "
-            "VALUES ('archie', 'athena', 'Long message', ?, ?)",
-            (long_body, now),
+            "INSERT INTO handoffs (agent, ts, summary, accomplished, pending) "
+            "VALUES ('athena', ?, ?, '', '')",
+            (now, long_summary),
         )
         conn.commit()
 
         row = conn.execute(
-            "SELECT LENGTH(body) FROM messages WHERE subject = 'Long message'"
+            "SELECT LENGTH(summary) FROM handoffs WHERE agent = 'athena'"
         ).fetchone()
         conn.close()
         assert row[0] == 50000
@@ -450,19 +223,19 @@ class TestEdgeCases:
         conn = get_db()
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-        evil = "'; DROP TABLE messages; --"
+        evil = "'; DROP TABLE agent_status; --"
         conn.execute(
-            "INSERT INTO messages (from_agent, to_agent, subject, body, created_at) "
-            "VALUES ('archie', 'athena', ?, ?, ?)",
+            "INSERT OR REPLACE INTO agent_status (agent, status, current_task, last_finding, updated_at) "
+            "VALUES ('evil_agent', 'active', ?, ?, ?)",
             (evil, evil, now),
         )
         conn.commit()
 
         # Table still exists
-        count = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+        count = conn.execute("SELECT COUNT(*) FROM agent_status").fetchone()[0]
         assert count == 1
 
-        row = conn.execute("SELECT subject FROM messages").fetchone()
+        row = conn.execute("SELECT current_task FROM agent_status WHERE agent = 'evil_agent'").fetchone()
         assert row[0] == evil  # stored as literal text
         conn.close()
 
@@ -478,11 +251,6 @@ class TestEdgeCases:
             "VALUES ('athena', 'active', '', '', ?)",
             (now,),
         )
-        conn.execute(
-            "INSERT INTO concepts (name, summary, domain, tags, created_at, updated_at) "
-            "VALUES ('Empty Test', '', '', '', ?, ?)",
-            (now, now),
-        )
         conn.commit()
 
         row = conn.execute(
@@ -492,7 +260,7 @@ class TestEdgeCases:
         conn.close()
 
 
-# ── 6. Journal accumulation ───────────────────────────────────────────────────
+# ── 5. Journal accumulation ───────────────────────────────────────────────────
 
 class TestJournalAccumulation:
     def test_30_days_of_journals(self, fresh_db):
@@ -530,48 +298,48 @@ class TestJournalAccumulation:
         assert elapsed < 5.0, f"100 journal writes took {elapsed:.2f}s (> 5s)"
 
 
-# ── 7. DB size sanity ─────────────────────────────────────────────────────────
+# ── 6. DB size sanity ─────────────────────────────────────────────────────────
 
 class TestDBSize:
     def test_db_size_after_heavy_use(self, fresh_db):
-        """After 500 messages + 50 concepts + 100 knowledge + 200 status updates, DB < 5MB."""
+        """After 200 status updates + 100 handoffs + 50 sync points, DB < 1MB."""
         from cairn_ai.db import get_db, get_db_path
 
         conn = get_db()
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-        # 500 messages
-        for i in range(500):
+        # 200 status updates (INSERT OR REPLACE = 1 final row per agent)
+        for i in range(200):
             conn.execute(
-                "INSERT INTO messages (from_agent, to_agent, subject, body, created_at) "
-                "VALUES (?, ?, ?, ?, ?)",
-                ("archie", "athena", f"Subject {i}", f"Body content {i} " * 10, now),
+                "INSERT OR REPLACE INTO agent_status (agent, status, current_task, updated_at, tool_calls_since_checkpoint) "
+                "VALUES (?, 'active', ?, ?, ?)",
+                (f"agent_{i % 4}", f"Task {i}", now, i),
             )
 
-        # 50 concepts
-        for i in range(50):
-            conn.execute(
-                "INSERT INTO concepts (name, summary, domain, version, created_at, updated_at) "
-                "VALUES (?, ?, 'ml', 1, ?, ?)",
-                (f"Concept {i}", f"Summary {i} " * 20, now, now),
-            )
-
-        # 100 knowledge entries
+        # 100 handoffs
         for i in range(100):
             conn.execute(
-                "INSERT INTO knowledge (topic, title, content, agent, created_at) "
-                "VALUES (?, ?, ?, 'apollo', ?)",
-                ("research", f"Entry {i}", f"Content {i} " * 30, now),
+                "INSERT INTO handoffs (agent, ts, summary, accomplished, pending) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (f"agent_{i % 4}", now, f"Summary {i} " * 10, f"Done {i}", f"Todo {i}"),
+            )
+
+        # 50 sync points
+        for i in range(50):
+            conn.execute(
+                "INSERT INTO sync_points (agent, sync_num, summary, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                (f"agent_{i % 4}", i, f"Sync summary {i}", now),
             )
 
         conn.commit()
         conn.close()
 
         db_size = get_db_path().stat().st_size
-        assert db_size < 5 * 1024 * 1024, f"DB is {db_size / 1024 / 1024:.2f}MB (> 5MB)"
+        assert db_size < 1 * 1024 * 1024, f"DB is {db_size / 1024 / 1024:.2f}MB (> 1MB)"
 
 
-# ── 8. Init flow ──────────────────────────────────────────────────────────────
+# ── 7. Init flow ──────────────────────────────────────────────────────────────
 
 class TestInitFlow:
     def test_clean_init(self, tmp_path):
@@ -596,8 +364,6 @@ class TestInitFlow:
 
         expected = [
             "agent_status", "glyph_counters", "sync_points", "handoffs",
-            "messages", "concepts", "concept_history", "concept_links",
-            "concept_perspectives", "knowledge", "reasoning_log", "tasks",
         ]
         for table in expected:
             assert table in tables, f"Missing table: {table}"
