@@ -94,8 +94,14 @@ def init(multi_agent: bool, persist_dir: str):
 
 
 @main.command()
-def serve():
+@click.option("--persist-dir", default="", help="Absolute path to .persist directory")
+def serve(persist_dir: str):
     """Start the MCP server (stdio transport)."""
+    if persist_dir:
+        from cairn_ai.db import configure
+
+        configure(Path(persist_dir))
+
     from cairn_ai.server import main as server_main
 
     server_main()
@@ -534,25 +540,21 @@ def _configure_mcp_settings(persist_path: Path):
 
     # Use full path to cairn executable — venvs won't be on Claude's PATH
     cairn_path = shutil.which("cairn") or "cairn"
-    existing = mcp_servers.get("cairn", {})
-    old_command = existing.get("command", "")
+    abs_persist = str(persist_path.resolve())
+    was_configured = "cairn" in mcp_servers
 
-    if "cairn" not in mcp_servers:
-        mcp_servers["cairn"] = {
-            "command": cairn_path,
-            "args": ["serve"],
-        }
-        settings["mcpServers"] = mcp_servers
-        mcp_file.write_text(json.dumps(settings, indent=2) + "\n")
-        click.echo(f"  Added MCP server config to .mcp.json ({cairn_path})")
-    elif old_command != cairn_path:
-        # Update stale path (e.g. bare "cairn" → full venv path after reinstall)
-        mcp_servers["cairn"]["command"] = cairn_path
-        settings["mcpServers"] = mcp_servers
-        mcp_file.write_text(json.dumps(settings, indent=2) + "\n")
-        click.echo(f"  Updated MCP server path: {old_command} → {cairn_path}")
+    # Always update — reinstalls can change the cairn binary path or persist location
+    mcp_servers["cairn"] = {
+        "command": cairn_path,
+        "args": ["serve", "--persist-dir", abs_persist],
+    }
+    settings["mcpServers"] = mcp_servers
+    mcp_file.write_text(json.dumps(settings, indent=2) + "\n")
+
+    if was_configured:
+        click.echo(f"  Updated MCP server config ({cairn_path}, persist={abs_persist})")
     else:
-        click.echo("  MCP server already configured (skipped)")
+        click.echo(f"  Added MCP server config to .mcp.json ({cairn_path})")
 
     # Clean up old location if it exists and only has mcpServers
     old_settings = Path(".claude/settings.json")
