@@ -24,11 +24,14 @@ Claude Code sessions lose context when they compact or crash. Cairn gives your a
 - **Handoff protocol** — structured session summaries that persist across restarts
 - **Glyph counters** — monotonic counters for tracking what happened between crashes
 - **Identity integrity** — SHA-256 checksums detect tampering with identity files
+- **Principal memory** — remembers who you are, your preferences, your working style
+- **Full-text search** — find anything from past sessions instantly
 
-## Free Tier (7 tools)
+## Tools
 
 | Tool | What it does |
 |------|-------------|
+| `ping` | Health check — server uptime and DB stats |
 | `open_session` | Start a session, detect crashes from last run |
 | `set_status` | Log current task + findings (auto-journals) |
 | `write_handoff` | Clean session close with structured summary |
@@ -36,14 +39,9 @@ Claude Code sessions lose context when they compact or crash. Cairn gives your a
 | `recover_context` | One-call recovery after crash/compaction |
 | `check_session_health` | Was last session CLEAN, COMPACTED, or CRASH? |
 | `mark_compacted` | Note that autocompaction happened |
-
-## Pro Tier (+20 tools)
-
-Identity, relationship memory, concept maps, knowledge store, reasoning traces, multi-agent coordination, and task management.
-
-```bash
-cairn license CP-XXXX-XXXX-XXXX-XXXX
-```
+| `read_principal` | Read principal profile — who you work with |
+| `observe_principal` | Record observations about your principal |
+| `search_memory` | Full-text search across all handoffs and journals |
 
 ## Integrity
 
