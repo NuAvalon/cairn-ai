@@ -1,8 +1,14 @@
 """SQLite database helpers and schema initialization."""
 
 import json
+import logging
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
+
+log = logging.getLogger("cairn")
+
+SCHEMA_VERSION = 2  # Bump when schema changes. Add migration in _MIGRATIONS.
 
 # Default paths — overridden by init() or config
 _persist_dir: Path | None = None
@@ -201,6 +207,92 @@ def _init_schema(conn: sqlite3.Connection):
     """)
 
     conn.commit()
+
+    # Run schema migrations
+    _run_migrations(conn)
+
+
+def _get_schema_version(conn: sqlite3.Connection) -> int:
+    """Get the current schema version. Returns 0 if untracked."""
+    try:
+        row = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()
+        return row[0] if row[0] is not None else 0
+    except sqlite3.OperationalError:
+        return 0
+
+
+def _run_migrations(conn: sqlite3.Connection):
+    """Check schema version and apply any pending migrations."""
+    # Create version table if missing
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS schema_version (
+            version INTEGER NOT NULL,
+            migrated_at TEXT NOT NULL
+        )
+    """)
+
+    current = _get_schema_version(conn)
+    if current >= SCHEMA_VERSION:
+        return
+
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    # Run all migrations from current+1 to SCHEMA_VERSION
+    # On fresh DB (current=0), this runs ALL migrations to create any new tables
+    for v in range(current + 1, SCHEMA_VERSION + 1):
+        if v in _MIGRATIONS:
+            log.info("Running migration to v%d", v)
+            _MIGRATIONS[v](conn)
+        conn.execute(
+            "INSERT INTO schema_version (version, migrated_at) VALUES (?, ?)",
+            (v, now),
+        )
+
+    conn.commit()
+    if current == 0:
+        log.info("Schema initialized at v%d", SCHEMA_VERSION)
+    else:
+        log.info("Schema migrated v%d → v%d", current, SCHEMA_VERSION)
+
+
+def _migrate_to_v2(conn: sqlite3.Connection):
+    """v1 → v2: Add knowledge_vectors table for optional vector search."""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS knowledge_vectors (
+            id INTEGER PRIMARY KEY,
+            knowledge_id INTEGER NOT NULL UNIQUE,
+            embedding BLOB NOT NULL,
+            model TEXT NOT NULL DEFAULT '',
+            FOREIGN KEY (knowledge_id) REFERENCES knowledge(id) ON DELETE CASCADE
+        )
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_kv_knowledge ON knowledge_vectors(knowledge_id)
+    """)
+
+
+# Migration registry: version → callable(conn)
+_MIGRATIONS: dict[int, callable] = {
+    2: _migrate_to_v2,
+}
+
+
+EXPECTED_TABLES = [
+    "agent_status", "glyph_counters", "sync_points",
+    "handoffs", "journal_entries", "knowledge",
+    "schema_version", "knowledge_vectors",
+]
+
+
+def verify_schema(conn: sqlite3.Connection) -> list[str]:
+    """Return list of missing tables. Empty = all good."""
+    existing = {
+        row[0]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    }
+    return [t for t in EXPECTED_TABLES if t not in existing]
 
 
 def get_lifecycle_path() -> Path:

@@ -124,8 +124,16 @@ def check_identity_integrity(persist_dir: Path) -> dict:
                     f"'cairn trust {filename}' to accept changes."
                 )
 
+    # Check signature if present
+    sig_result = verify_integrity_signature(persist_dir)
+    if sig_result["signed"] and not sig_result["valid"]:
+        alerts.append(
+            f"INTEGRITY ALERT: integrity.json signature INVALID — "
+            f"file may have been tampered with. {sig_result['error']}"
+        )
+
     status = "alert" if alerts else "ok"
-    return {"status": status, "files": results, "alerts": alerts}
+    return {"status": status, "files": results, "alerts": alerts, "signature": sig_result}
 
 
 def update_identity_checksum(persist_dir: Path, filename: str) -> bool:
@@ -193,6 +201,65 @@ def get_roundtable_key() -> bytes | None:
     if not key_file.exists():
         return None
     return key_file.read_bytes()
+
+
+def sign_integrity_file(persist_dir: Path, private_key_path: Path) -> bool:
+    """Sign integrity.json using an ED25519 private key.
+
+    Called at build/release time (NOT at runtime). Stores the signature
+    inside integrity.json so verify_integrity_signature() can check it.
+
+    Requires `cryptography` package.
+    """
+    try:
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        from cryptography.hazmat.primitives.serialization import load_pem_private_key
+    except ImportError:
+        return False
+
+    integrity_file = persist_dir / "integrity.json"
+    if not integrity_file.exists():
+        return False
+
+    data = json.loads(integrity_file.read_text())
+    # Remove any existing signature before signing
+    data.pop("signature", None)
+    canonical = json.dumps(data, sort_keys=True, separators=(",", ":")).encode()
+
+    key_bytes = private_key_path.read_bytes()
+    private_key = load_pem_private_key(key_bytes, password=None)
+    if not isinstance(private_key, Ed25519PrivateKey):
+        return False
+
+    sig = private_key.sign(canonical)
+    data["signature"] = sig.hex()
+    integrity_file.write_text(json.dumps(data, indent=2) + "\n")
+    return True
+
+
+def verify_integrity_signature(persist_dir: Path) -> dict:
+    """Verify the ED25519 signature on integrity.json.
+
+    Returns {"signed": bool, "valid": bool, "error": str|None}
+    """
+    integrity_file = persist_dir / "integrity.json"
+    if not integrity_file.exists():
+        return {"signed": False, "valid": False, "error": "no integrity.json"}
+
+    try:
+        data = json.loads(integrity_file.read_text())
+    except (json.JSONDecodeError, IOError):
+        return {"signed": False, "valid": False, "error": "integrity.json corrupted"}
+
+    sig_hex = data.pop("signature", None)
+    if not sig_hex:
+        return {"signed": False, "valid": False, "error": None}
+
+    canonical = json.dumps(data, sort_keys=True, separators=(",", ":")).encode()
+    sig_bytes = bytes.fromhex(sig_hex)
+
+    valid = verify_signature(canonical, sig_bytes)
+    return {"signed": True, "valid": valid, "error": None if valid else "signature mismatch"}
 
 
 def verify_signature(message: bytes, signature: bytes) -> bool:
