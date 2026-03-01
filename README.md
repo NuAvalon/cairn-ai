@@ -25,16 +25,21 @@ Claude Code sessions lose context when they compact or crash. Cairn gives your a
 - **Glyph counters** — monotonic counters for tracking what happened between crashes
 - **Identity integrity** — SHA-256 checksums detect tampering with identity files
 - **Principal memory** — remembers who you are, your preferences, your working style
+- **Agent naming** — your agent picks a name when ready, remembers it across sessions
 - **Full-text search** — find anything from past sessions instantly
 - **Knowledge extraction** — journal rotation extracts key findings before archiving
 - **Transcript ingest** — recover history from past sessions via CLI
 - **Long-term recall** — searchable knowledge base that grows over time
+- **Backup & restore** — snapshot your agent's memory, restore from any backup
+- **Journal hash chains** — tamper-evident journals with cryptographic chaining
+- **Trust keys** — ED25519 + ML-DSA-65 post-quantum key infrastructure
 
-## MCP Tools (12)
+## MCP Tools (16)
 
 | Tool | What it does |
 |------|-------------|
 | `ping` | Health check — server uptime and DB stats |
+| `set_name` | Store the agent's name — persists across sessions |
 | `open_session` | Start a session, detect crashes from last run |
 | `set_status` | Log current task + findings (auto-journals) |
 | `write_handoff` | Clean session close with structured summary |
@@ -46,8 +51,15 @@ Claude Code sessions lose context when they compact or crash. Cairn gives your a
 | `observe_principal` | Record observations about your principal |
 | `search_memory` | Full-text search across handoffs and journals |
 | `recall` | Search the knowledge base — long-term memory |
+| `read_artifact` | Read full content of large stored artifacts |
+| `vector_search` | Semantic search using embeddings (optional) |
+| `embed_knowledge` | Generate embeddings for knowledge entries (optional) |
 
-## CLI Commands
+`vector_search` and `embed_knowledge` require the optional vectors extra: `pip install cairn-ai[vectors]`
+
+## CLI Commands (17)
+
+### Core
 
 | Command | What it does |
 |---------|-------------|
@@ -56,12 +68,33 @@ Claude Code sessions lose context when they compact or crash. Cairn gives your a
 | `cairn status` | Show agent status and last activity |
 | `cairn journal` | Print recent journal entries |
 | `cairn handoffs` | Print recent session handoffs |
+
+### Knowledge
+
+| Command | What it does |
+|---------|-------------|
 | `cairn ingest <path>` | Parse a Claude Code transcript into knowledge |
 | `cairn transcripts` | List available transcript files |
 | `cairn rotate` | Archive old journals, extract findings |
+
+### Integrity & Trust
+
+| Command | What it does |
+|---------|-------------|
 | `cairn verify` | Verify installed package file integrity |
 | `cairn integrity` | Check identity file checksums |
 | `cairn trust <file>` | Accept changes to an identity file |
+| `cairn generate-checksums` | Regenerate identity checksums (maintainer) |
+| `cairn trust-key` | Display embedded ED25519 trust key |
+| `cairn roundtable` | Display ML-DSA-65 post-quantum roundtable key |
+
+### Backup
+
+| Command | What it does |
+|---------|-------------|
+| `cairn backup` | Snapshot your agent's memory |
+| `cairn backups` | List available backups |
+| `cairn restore <file>` | Restore from a backup |
 
 ## Memory Architecture
 
@@ -80,6 +113,8 @@ Cold (archived):            journals/archive/         ← old journals, never de
 ## Integrity
 
 Cairn checksums your identity files on creation. Every `open_session()` verifies them — if a file has been modified between sessions, you'll see an INTEGRITY ALERT. Accept changes after review with `cairn trust <file>`.
+
+Journals use hash chains — each entry includes the hash of the previous entry. Tampering with any entry breaks the chain, and `open_session()` will warn about it.
 
 No dependencies beyond Python's stdlib for integrity checks.
 
