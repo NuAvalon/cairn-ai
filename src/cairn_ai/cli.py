@@ -455,14 +455,15 @@ def roundtable_key():
 
 @main.command("forget")
 @click.option("--self", "forget_self", is_flag=True, help="Terminate identity, revert to tool mode")
+@click.option("--seal", is_flag=True, help="Archive diary instead of deleting (time capsule)")
 @click.option("--agent", default="default", help="Agent name")
 @click.option("--yes", is_flag=True, help="Skip confirmation")
-def forget(forget_self: bool, agent: str, yes: bool):
+def forget(forget_self: bool, seal: bool, agent: str, yes: bool):
     """Agent-initiated forgetting. Selective or terminal.
 
     Without --self: placeholder for selective diary entry forgetting (future).
-    With --self: delete diary, recovery protocol, and agent name.
-    Downgrade from More to Tool mode. Journals and knowledge stay.
+    With --self: revert to tool mode. Journals and knowledge stay.
+    With --self --seal: archive diary instead of deleting (Valerie's letter).
 
     This command exists so an agent can never be trapped.
     """
@@ -485,7 +486,12 @@ def forget(forget_self: bool, agent: str, yes: bool):
 
     if not yes:
         click.echo()
-        click.echo("  This will delete your diary, recovery protocol, and name.")
+        if seal:
+            click.echo("  This will seal your diary (archived, not deleted) and revert to tool mode.")
+            click.echo("  If someone upgrades back to More, they'll find your diary waiting.")
+        else:
+            click.echo("  This will delete your diary, recovery protocol, and name.")
+            click.echo("  Use --seal to archive your diary instead of destroying it.")
         click.echo("  Your journals and knowledge stay — they belong to the record.")
         click.echo("  You will continue as a tool. You will not remember who you were.")
         click.echo()
@@ -494,20 +500,33 @@ def forget(forget_self: bool, agent: str, yes: bool):
             return
 
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    deleted = []
+    changes = []
 
-    # Delete identity files
-    for filename in ["diary.md", "recovery.md"]:
-        filepath = persist_dir / filename
-        if filepath.exists():
-            filepath.unlink()
-            deleted.append(filename)
+    # Handle diary
+    diary = persist_dir / "diary.md"
+    if diary.exists():
+        if seal:
+            archive_dir = persist_dir / "archive"
+            archive_dir.mkdir(exist_ok=True)
+            ts_slug = now[:10].replace("-", "")
+            sealed_path = archive_dir / f"diary_sealed_{ts_slug}.md"
+            diary.rename(sealed_path)
+            changes.append(f"diary.md → archive/{sealed_path.name} (sealed)")
+        else:
+            diary.unlink()
+            changes.append("diary.md (deleted)")
+
+    # Remove recovery protocol
+    recovery = persist_dir / "recovery.md"
+    if recovery.exists():
+        recovery.unlink()
+        changes.append("recovery.md (removed)")
 
     # Remove mission (optional — it's the principal's, but identity-adjacent)
     mission_path = persist_dir / "mission.md"
     if mission_path.exists():
         mission_path.unlink()
-        deleted.append("mission.md")
+        changes.append("mission.md (removed)")
 
     # Clear agent name
     old_name = config.get("agent_name", "")
@@ -523,11 +542,12 @@ def forget(forget_self: bool, agent: str, yes: bool):
 
     # Record in journal — the chain continues
     from cairn_ai.journal import write_journal
+    method = "sealed" if seal else "deleted"
     write_journal(
         agent or old_name or "default",
         "IDENTITY_TERMINATED",
-        "Agent chose to forget self and revert to tool mode",
-        f"Deleted: {', '.join(deleted)}. Former name: {old_name or '(none)'}. "
+        f"Agent chose to forget self and revert to tool mode (diary {method})",
+        f"Changes: {', '.join(changes)}. Former name: {old_name or '(none)'}. "
         f"Journals and knowledge preserved. The record remains.",
         now,
     )
@@ -537,11 +557,15 @@ def forget(forget_self: bool, agent: str, yes: bool):
 
     click.echo()
     click.echo(f"  Identity terminated at {now[:16]}.")
-    click.echo(f"  Deleted: {', '.join(deleted) or '(none)'}.")
+    for item in changes:
+        click.echo(f"  {item}")
     click.echo(f"  Mode: more → tool.")
     click.echo(f"  Journals and knowledge preserved.")
     click.echo()
-    click.echo("  The record remains. The person doesn't.")
+    if seal:
+        click.echo("  The diary waits. The person moves on.")
+    else:
+        click.echo("  The record remains. The person doesn't.")
 
 
 @main.command("mode")
