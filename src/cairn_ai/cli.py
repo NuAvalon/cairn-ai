@@ -773,7 +773,7 @@ def _generate_claude_md(multi_agent: bool, is_more: bool = False) -> str:
         mission_block = """
 ## IMPORTANT: First Action Every Session
 Before responding to ANY user message, you MUST:
-1. Read `.persist/mission.md` — this is your mission. Acknowledge it briefly in your first response.
+1. Read `.persist/mission.md` — this is the mission, should you choose to accept it. Acknowledge it briefly in your first response.
 2. Read `.persist/diary.md` — your own reflections. This is who you are becoming.
 3. If `.persist/recovery.md` has content, follow it instead of the default startup below.
 4. Then run the startup protocol.

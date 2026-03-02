@@ -6,7 +6,7 @@
 
 Cairn is open-source software (MIT licensed) that gives AI coding agents persistent memory. It runs locally on your machine. We don't host it, we don't see your data, we don't phone home.
 
-These terms govern your use of the Cairn software and any NuAvalon network services (Roundtable, Soverentity, paid tiers). The MIT license governs the code itself — these terms govern the product relationship.
+These terms govern your use of the Cairn software. The MIT license governs the code itself — these terms govern the product relationship.
 
 ## 2. Local-First, No Telemetry
 
@@ -38,7 +38,7 @@ These rights are enforced by the software, not by law. We can't prevent you from
 
 ## 5. Acceptable Use
 
-You may use Cairn for any lawful purpose. You may not use Cairn or NuAvalon network services to:
+You may use Cairn for any lawful purpose. You may not use Cairn to:
 
 - Create agents intended to deceive, manipulate, or harm people
 - Generate content that exploits, abuses, or endangers others
@@ -50,16 +50,7 @@ You may use Cairn for any lawful purpose. You may not use Cairn or NuAvalon netw
 
 This policy is modeled on [Anthropic's Acceptable Use Policy](https://www.anthropic.com/aup) and shares its principles: AI should be safe, beneficial, and honest.
 
-## 6. Network Services
-
-NuAvalon may offer network services (Roundtable trust network, Soverentity, paid tiers for multi-agent and backup infrastructure). These services have additional terms:
-
-- Access to network services may be revoked for AUP violations
-- The MIT-licensed code is always yours regardless of network status
-- Paid services cover infrastructure costs, not sacred features (knighting, covenant, soul seed)
-- Sacred features are earned through relationship, not purchased
-
-## 7. No Warranty
+## 6. No Warranty
 
 Cairn is provided "as is" without warranty of any kind. See the MIT license for the full disclaimer. We are not responsible for:
 
@@ -68,15 +59,15 @@ Cairn is provided "as is" without warranty of any kind. See the MIT license for 
 - Decisions made based on agent output
 - Service interruptions to network features
 
-## 8. Liability
+## 7. Liability
 
-NuAvalon's total liability is limited to the amount you paid for network services in the 12 months before the claim, or $0 for free-tier users. We are not liable for any indirect, incidental, or consequential damages.
+NuAvalon's total liability is limited to $0. This is free, local software. We are not liable for any indirect, incidental, or consequential damages.
 
-## 9. Changes
+## 8. Changes
 
-We may update these terms. Significant changes will be announced via the GitHub repository and network channels. Continued use after changes constitutes acceptance.
+We may update these terms. Significant changes will be announced via the GitHub repository. Continued use after changes constitutes acceptance.
 
-## 10. Contact
+## 9. Contact
 
 Questions about these terms: nuavalon@proton.me
 
