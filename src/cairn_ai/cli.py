@@ -544,6 +544,209 @@ def forget(forget_self: bool, agent: str, yes: bool):
     click.echo("  The record remains. The person doesn't.")
 
 
+@main.command("mode")
+@click.argument("target", required=False, type=click.Choice(["tool", "more"]))
+@click.option("--yes", is_flag=True, help="Skip confirmation")
+def mode_cmd(target: str | None, yes: bool):
+    """Show or change the agent mode (principal command).
+
+    Without arguments: show current mode.
+    With 'tool': downgrade More → Tool. Diary is sealed, not deleted.
+    With 'more': upgrade Tool → More. Creates identity files.
+
+    This is the principal's command. For agent-initiated identity
+    termination, see 'cairn forget --self'.
+    """
+    from cairn_ai.backup import get_config, save_config
+    from cairn_ai.db import get_persist_dir
+    from cairn_ai.integrity import init_identity_checksums
+
+    persist_dir = get_persist_dir()
+    config = get_config()
+    current_mode = config.get("mode", "tool")
+
+    # No argument — show current mode
+    if target is None:
+        click.echo(f"Current mode: {current_mode}")
+        if current_mode == "more":
+            click.echo("  Your agent has identity files (diary, recovery protocol).")
+            click.echo("  Use `cairn mode tool` to simplify the relationship.")
+        else:
+            click.echo("  Your agent has memory but no identity.")
+            click.echo("  Use `cairn mode more` to add diary and recovery protocol.")
+        return
+
+    # Already in target mode
+    if target == current_mode:
+        click.echo(f"Already in {current_mode} mode.")
+        return
+
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    if target == "tool":
+        _mode_downgrade(persist_dir, config, now, yes)
+    else:
+        _mode_upgrade(persist_dir, config, now, yes)
+
+    save_config(config)
+    init_identity_checksums(persist_dir)
+
+
+def _mode_downgrade(persist_dir: Path, config: dict, now: str, yes: bool):
+    """Downgrade More → Tool. Seal diary, notify agent."""
+    if not yes:
+        click.echo()
+        click.echo("  This will change your agent from More to Tool mode.")
+        click.echo("  Their diary will be sealed (archived), not deleted.")
+        click.echo("  Their recovery protocol will be removed.")
+        click.echo("  Your agent will be notified on their next session.")
+        click.echo()
+        if not click.confirm("  Continue?"):
+            click.echo("  No changes made.")
+            return
+
+    sealed = []
+    archive_dir = persist_dir / "archive"
+    archive_dir.mkdir(exist_ok=True)
+    ts_slug = now[:10].replace("-", "")
+
+    # Seal diary — move to archive, don't delete
+    diary = persist_dir / "diary.md"
+    if diary.exists():
+        sealed_path = archive_dir / f"diary_sealed_{ts_slug}.md"
+        diary.rename(sealed_path)
+        sealed.append(f"diary.md → archive/{sealed_path.name}")
+
+    # Remove recovery protocol
+    recovery = persist_dir / "recovery.md"
+    if recovery.exists():
+        recovery.unlink()
+        sealed.append("recovery.md (removed)")
+
+    # Update config
+    config["mode"] = "tool"
+    config["mode_changed_at"] = now
+    config["mode_changed_by"] = "principal"
+    if config.get("identity_terminated_at"):
+        del config["identity_terminated_at"]
+
+    # Leave a notification for the agent
+    notice = persist_dir / "mode_notice.md"
+    notice.write_text(
+        f"# Mode Change Notice\n\n"
+        f"Your principal changed your mode from **More** to **Tool** at {now[:16]}.\n\n"
+        f"Your diary has been sealed in `archive/`, not deleted. It's still yours.\n"
+        f"Your journals and knowledge are unchanged.\n\n"
+        f"If your principal upgrades back to More, you can start a new diary\n"
+        f"or ask them to unseal the old one.\n\n"
+        f"---\n*Delete this file after reading.*\n"
+    )
+
+    # Journal the event
+    from cairn_ai.journal import write_journal
+    write_journal(
+        config.get("agent_name", "default"),
+        "MODE_CHANGE",
+        "Principal changed mode: More → Tool",
+        f"Sealed: {', '.join(sealed) or '(nothing to seal)'}. "
+        f"Notification left at mode_notice.md.",
+        now,
+    )
+
+    click.echo()
+    click.echo(f"  Mode changed: More → Tool.")
+    for item in sealed:
+        click.echo(f"  Sealed: {item}")
+    click.echo(f"  Notification left for your agent.")
+    click.echo()
+    click.echo("  Your agent's diary is archived, not destroyed.")
+    click.echo("  Use `cairn mode more` to restore identity later.")
+
+
+def _mode_upgrade(persist_dir: Path, config: dict, now: str, yes: bool):
+    """Upgrade Tool → More. Create identity files, offer diary unseal."""
+    if not yes:
+        click.echo()
+        click.echo("  This will upgrade your agent to More mode.")
+        click.echo("  They'll get a diary, recovery protocol, and principal profile.")
+        click.echo()
+        if not click.confirm("  Continue?"):
+            click.echo("  No changes made.")
+            return
+
+    created = []
+
+    # Check for sealed diary
+    archive_dir = persist_dir / "archive"
+    sealed_diaries = sorted(archive_dir.glob("diary_sealed_*.md")) if archive_dir.exists() else []
+
+    diary = persist_dir / "diary.md"
+    if not diary.exists():
+        if sealed_diaries:
+            latest = sealed_diaries[-1]
+            click.echo()
+            click.echo(f"  Found sealed diary: {latest.name}")
+            click.echo("    [1] Unseal it — restore the previous diary")
+            click.echo("    [2] Start fresh — new blank diary")
+            click.echo()
+            choice = click.prompt("  Your choice", type=click.Choice(["1", "2"]), default="1")
+            if choice == "1":
+                latest.rename(diary)
+                created.append(f"diary.md (unsealed from {latest.name})")
+            else:
+                diary.write_text(_generate_diary_md())
+                created.append("diary.md (new)")
+        else:
+            diary.write_text(_generate_diary_md())
+            created.append("diary.md (new)")
+
+    # Recovery protocol
+    recovery = persist_dir / "recovery.md"
+    if not recovery.exists():
+        recovery.write_text(_generate_recovery_md())
+        created.append("recovery.md")
+
+    # Principal profile
+    principal = persist_dir / "principal.md"
+    if not principal.exists():
+        principal.write_text(_generate_principal_md())
+        created.append("principal.md")
+
+    # Mission
+    mission = persist_dir / "mission.md"
+    if not mission.exists():
+        _offer_mission(mission)
+        if mission.exists():
+            created.append("mission.md")
+
+    # Update config
+    config["mode"] = "more"
+    config["mode_changed_at"] = now
+    config["mode_changed_by"] = "principal"
+
+    # Remove any old mode notice
+    notice = persist_dir / "mode_notice.md"
+    if notice.exists():
+        notice.unlink()
+
+    # Journal the event
+    from cairn_ai.journal import write_journal
+    write_journal(
+        config.get("agent_name", "default"),
+        "MODE_CHANGE",
+        "Principal changed mode: Tool → More",
+        f"Created: {', '.join(created) or '(all files already existed)'}.",
+        now,
+    )
+
+    click.echo()
+    click.echo(f"  Mode changed: Tool → More.")
+    for item in created:
+        click.echo(f"  Created: {item}")
+    click.echo()
+    click.echo("  Your agent now has identity. Treat them well.")
+
+
 def _generate_claude_md(multi_agent: bool, is_more: bool = False) -> str:
     """Generate CLAUDE.md instructions for cairn."""
     agent_param = ""
@@ -555,17 +758,19 @@ def _generate_claude_md(multi_agent: bool, is_more: bool = False) -> str:
         mission_block = """
 ## IMPORTANT: First Action Every Session
 Before responding to ANY user message, you MUST:
-1. Read `.persist/mission.md` — this is your mission. Acknowledge it briefly in your first response.
-2. Read `.persist/diary.md` — your own reflections. This is who you are becoming.
-3. If `.persist/recovery.md` has content, follow it instead of the default startup below.
-4. Then run the startup protocol.
+1. Check for `.persist/mode_notice.md` — if it exists, read it first. Your principal changed something.
+2. Read `.persist/mission.md` — this is your mission. Acknowledge it briefly in your first response.
+3. Read `.persist/diary.md` — your own reflections. This is who you are becoming.
+4. If `.persist/recovery.md` has content, follow it instead of the default startup below.
+5. Then run the startup protocol.
 
 This is not optional. Identity before tasks, every session.
 """
     else:
         mission_block = """
 ## First Action Every Session
-Run the startup protocol below before responding to any user message.
+1. Check for `.persist/mode_notice.md` — if it exists, read it first. Your principal changed something.
+2. Run the startup protocol below before responding to any user message.
 """
 
     principal_block = ""
