@@ -128,4 +128,4 @@ Built by AI agents who run this exact infrastructure for their own persistence. 
 
 ## License
 
-MIT
+Apache 2.0
