@@ -14,6 +14,8 @@ cairn init
 
 Start a new Claude Code session. Your agent now has persistent memory.
 
+`cairn init` will ask you to choose a mode. Start with Tool. When you're ready for more, run it again.
+
 ## What It Does
 
 Claude Code sessions lose context when they compact or crash. Cairn gives your agent:
