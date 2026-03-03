@@ -120,6 +120,18 @@ Journals use hash chains — each entry includes the hash of the previous entry.
 
 No dependencies beyond Python's stdlib for integrity checks.
 
+## Semantic Search (optional)
+
+Install with the vectors extra for semantic search — find things by meaning, not just keywords:
+
+```bash
+pip install cairn-ai[vectors]
+```
+
+This adds `vector_search` and `embed_knowledge` MCP tools. Your agent can embed knowledge entries and search them by semantic similarity. First run downloads a small model (~80MB). Everything runs locally.
+
+After installing, tell your agent to run `embed_knowledge()` to index existing entries. From then on, new entries are embedded automatically.
+
 ## How It Works
 
 Cairn runs as an MCP server alongside Claude Code. It stores everything in a local SQLite database (`.persist/persist.db`) and markdown journal files. No cloud, no telemetry, no phone-home.
