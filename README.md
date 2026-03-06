@@ -36,7 +36,7 @@ Claude Code sessions lose context when they compact or crash. Cairn gives your a
 - **Journal hash chains** — tamper-evident journals with cryptographic chaining
 - **Trust keys** — ED25519 + ML-DSA-65 post-quantum key infrastructure
 
-## MCP Tools (16)
+## MCP Tools (21)
 
 | Tool | What it does |
 |------|-------------|
@@ -53,6 +53,11 @@ Claude Code sessions lose context when they compact or crash. Cairn gives your a
 | `observe_principal` | Record observations about your principal |
 | `search_memory` | Full-text search across handoffs and journals |
 | `recall` | Search the knowledge base — long-term memory |
+| `store_knowledge` | Store a finding, decision, or insight to long-term memory |
+| `batch_store_knowledge` | Bulk-store multiple knowledge entries at once |
+| `update_knowledge` | Edit an existing knowledge entry in place |
+| `delete_knowledge` | Remove a knowledge entry by ID |
+| `list_knowledge` | Browse knowledge by topic, tags, or agent |
 | `read_artifact` | Read full content of large stored artifacts |
 | `vector_search` | Semantic search using embeddings (optional) |
 | `embed_knowledge` | Generate embeddings for knowledge entries (optional) |
@@ -110,7 +115,7 @@ Cold (archived):            journals/archive/         ← old journals, never de
 
 **Transcript ingest** (`cairn ingest`) parses Claude Code JSONL transcripts offline and stores highlights — commits, decisions, user instructions, file writes. The agent never touches raw JSON.
 
-**Recall** (`recall` MCP tool) searches the knowledge base. This is your agent's long-term memory — findings extracted from journals, highlights from transcripts, everything searchable.
+**Knowledge CRUD** — full lifecycle for long-term memory. `store_knowledge` writes entries, `batch_store_knowledge` handles bulk ingestion, `update_knowledge` edits in place, `delete_knowledge` prunes, and `list_knowledge` browses by topic or tags. `recall` and `vector_search` handle retrieval. Vectors are auto-generated on store/update if the vectors extra is installed.
 
 ## Integrity
 
