@@ -1118,5 +1118,72 @@ def _configure_mcp_settings(persist_path: Path):
             pass
 
 
+@main.command("hw")
+def hardware_cmd():
+    """Show available inference hardware (NPU/GPU/CPU)."""
+    try:
+        from cairn_ai.inference import describe_hardware
+    except ImportError:
+        click.echo("ONNX Runtime not installed. Run: pip install cairn-ai[npu]")
+        return
+
+    hw = describe_hardware()
+    click.echo(f"  Primary: {hw['primary']}")
+    if hw["is_npu"]:
+        click.echo("  Type: NPU (Neural Processing Unit)")
+    elif hw["is_gpu"]:
+        click.echo("  Type: GPU")
+    else:
+        click.echo("  Type: CPU (no NPU or GPU detected)")
+    click.echo(f"  All providers: {', '.join(hw['all_providers'])}")
+
+
+@main.command("ask")
+@click.argument("prompt")
+@click.option("--model", default="qwen2.5:7b", help="Ollama model name")
+@click.option("--system", default="", help="System prompt")
+def ask_cmd(prompt: str, model: str, system: str):
+    """Ask a local LLM a question (fully offline, no API keys)."""
+    try:
+        from cairn_ai.inference import LocalLLM
+    except ImportError:
+        click.echo("ONNX Runtime not installed. Run: pip install cairn-ai[npu]")
+        return
+
+    llm = LocalLLM(model)
+    if not llm.is_available():
+        click.echo(f"Model '{model}' not found. Available: {llm.list_models()}")
+        return
+
+    click.echo(f"  [{model}] thinking...")
+    response = llm.ask(prompt, system=system)
+    click.echo(f"\n{response}")
+
+
+@main.command("embed")
+@click.argument("text")
+@click.option("--model-dir", default="", help="Path to ONNX model directory")
+def embed_cmd(text: str, model_dir: str):
+    """Generate an embedding for a text string (NPU-accelerated)."""
+    try:
+        from cairn_ai.inference import EmbeddingModel, describe_hardware
+    except ImportError:
+        click.echo("ONNX Runtime not installed. Run: pip install cairn-ai[npu]")
+        return
+
+    if not model_dir:
+        click.echo("Specify --model-dir pointing to an ONNX model with tokenizer.json")
+        return
+
+    hw = describe_hardware()
+    click.echo(f"  Hardware: {hw['primary']}")
+
+    model = EmbeddingModel(model_dir)
+    embedding = model.embed_one(text)
+    click.echo(f"  Dimension: {len(embedding)}")
+    click.echo(f"  Vector: [{embedding[0]:.4f}, {embedding[1]:.4f}, ... {embedding[-1]:.4f}]")
+    click.echo(f"  Norm: {sum(x*x for x in embedding):.6f}")
+
+
 if __name__ == "__main__":
     main()
