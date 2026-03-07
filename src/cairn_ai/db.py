@@ -8,7 +8,7 @@ from pathlib import Path
 
 log = logging.getLogger("cairn")
 
-SCHEMA_VERSION = 2  # Bump when schema changes. Add migration in _MIGRATIONS.
+SCHEMA_VERSION = 3  # Bump when schema changes. Add migration in _MIGRATIONS.
 
 # Default paths — overridden by init() or config
 _persist_dir: Path | None = None
@@ -287,16 +287,30 @@ def _migrate_to_v2(conn: sqlite3.Connection):
     """)
 
 
-# Migration registry: version → callable(conn)
+def _migrate_to_v3(conn: sqlite3.Connection):
+    """v2 -> v3: Add agent_keys table for cryptographic agent identity."""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS agent_keys (
+            agent TEXT PRIMARY KEY,
+            public_key_pem TEXT NOT NULL,
+            fingerprint TEXT NOT NULL DEFAULT '',
+            registered_at TEXT NOT NULL,
+            last_auth_at TEXT DEFAULT NULL
+        )
+    """)
+
+
+# Migration registry: version -> callable(conn)
 _MIGRATIONS: dict[int, callable] = {
     2: _migrate_to_v2,
+    3: _migrate_to_v3,
 }
 
 
 EXPECTED_TABLES = [
     "agent_status", "glyph_counters", "sync_points",
     "handoffs", "journal_entries", "knowledge",
-    "schema_version", "knowledge_vectors",
+    "schema_version", "knowledge_vectors", "agent_keys",
 ]
 
 

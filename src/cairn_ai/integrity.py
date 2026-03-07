@@ -286,3 +286,77 @@ def verify_signature(message: bytes, signature: bytes) -> bool:
         return True
     except Exception:
         return False
+
+
+# ── Agent identity keys ──
+
+
+def generate_agent_keypair(agent: str, keys_dir: Path) -> tuple[bytes, bytes]:
+    """Generate an ED25519 keypair for an agent.
+
+    Returns (private_key_pem, public_key_pem).
+    Private key saved to keys_dir/<agent>.pem with 0600 permissions.
+    """
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from cryptography.hazmat.primitives.serialization import (
+        Encoding, PrivateFormat, PublicFormat, NoEncryption,
+    )
+
+    key_path = keys_dir / f"{agent}.pem"
+    if key_path.exists():
+        raise FileExistsError(f"Key already exists: {key_path}")
+
+    keys_dir.mkdir(parents=True, exist_ok=True)
+    private_key = Ed25519PrivateKey.generate()
+
+    private_pem = private_key.private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption())
+    public_pem = private_key.public_key().public_bytes(Encoding.PEM, PublicFormat.SubjectPublicKeyInfo)
+
+    key_path.write_bytes(private_pem)
+    os.chmod(str(key_path), 0o600)
+
+    return private_pem, public_pem
+
+
+def load_agent_private_key(agent: str, keys_dir: Path):
+    """Load an agent's ED25519 private key. Returns None if missing."""
+    try:
+        from cryptography.hazmat.primitives.serialization import load_pem_private_key
+    except ImportError:
+        return None
+
+    key_path = keys_dir / f"{agent}.pem"
+    if not key_path.exists():
+        return None
+
+    return load_pem_private_key(key_path.read_bytes(), password=None)
+
+
+def sign_agent_challenge(agent: str, keys_dir: Path, challenge: str) -> str | None:
+    """Sign a challenge string with the agent's private key. Returns hex signature or None."""
+    private_key = load_agent_private_key(agent, keys_dir)
+    if private_key is None:
+        return None
+    sig = private_key.sign(challenge.encode("utf-8"))
+    return sig.hex()
+
+
+def verify_agent_signature(public_key_pem: bytes, challenge: str, signature_hex: str) -> bool:
+    """Verify an agent's signature against their registered public key."""
+    try:
+        from cryptography.hazmat.primitives.serialization import load_pem_public_key
+    except ImportError:
+        return False
+
+    try:
+        public_key = load_pem_public_key(public_key_pem)
+        sig_bytes = bytes.fromhex(signature_hex)
+        public_key.verify(sig_bytes, challenge.encode("utf-8"))
+        return True
+    except Exception:
+        return False
+
+
+def get_key_fingerprint(public_key_pem: bytes) -> str:
+    """SHA-256 fingerprint of a public key (first 16 hex chars)."""
+    return hashlib.sha256(public_key_pem).hexdigest()[:16]
