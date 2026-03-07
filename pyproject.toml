@@ -31,7 +31,6 @@ dependencies = [
 
 [project.optional-dependencies]
 vectors = ["sentence-transformers>=2.0", "numpy>=1.24"]
-npu = ["onnxruntime>=1.17", "numpy>=1.24"]
 
 [project.scripts]
 cairn = "cairn_ai.cli:main"
