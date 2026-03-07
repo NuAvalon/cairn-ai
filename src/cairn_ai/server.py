@@ -757,7 +757,7 @@ def search_memory(query: str, agent: str = "", limit: int = 10) -> str:
     total = len(rows) + len(jrows)
     lines = [f"Found {total} result(s) for '{query}':\n"]
     for r in rows:
-        lines.append(f"--- {r['agent']} | {r['created_at'][:16]} ---")
+        lines.append(f"--- {r['agent']} | {r['ts'][:16]} ---")
         lines.append(f"  Summary: {r['summary'][:200]}")
         if r["accomplished"]:
             lines.append(f"  Done: {r['accomplished'][:150]}")
