@@ -1,4 +1,4 @@
-"""Transcript ingest — parse Claude Code JSONL transcripts into cairn knowledge.
+"""Transcript ingest — parse JSONL transcripts into cairn knowledge.
 
 Reads JSONL conversation logs, extracts key moments (tool calls, decisions,
 user instructions), and stores them as timestamped knowledge entries.
@@ -82,7 +82,7 @@ _ARTIFACT_THRESHOLD = 10_000  # 10KB
 
 def ingest_transcript(path: str, agent: str = "default",
                       dry_run: bool = False) -> str:
-    """Parse a Claude Code JSONL transcript and store highlights.
+    """Parse a JSONL transcript and store highlights.
 
     Args:
         path: Path to the JSONL transcript file
@@ -254,7 +254,7 @@ def _extract_from_record(record: dict, agent: str) -> list[dict]:
     if not ts:
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    # Claude Code JSONL nests role/content inside a "message" object.
+    # JSONL nests role/content inside a "message" object.
     # Top-level "type" field holds "user", "assistant", "progress", etc.
     msg = record.get("message", {})
     if not isinstance(msg, dict):
@@ -392,11 +392,11 @@ def _get_text_content(record: dict) -> str:
 
 
 def find_transcripts(project_dir: str = "") -> list[dict]:
-    """Find Claude Code JSONL transcript files.
+    """Find JSONL transcript files.
 
     Args:
         project_dir: Optional project directory to search. If empty, searches
-                     common Claude Code transcript locations.
+                     common transcript locations.
 
     Returns:
         List of {path, size_kb, modified} dicts, sorted newest first.

@@ -14,7 +14,7 @@ from cairn_ai import __version__
 @click.group()
 @click.version_option(version=__version__)
 def main():
-    """cairn — Persistent memory for Claude Code agents."""
+    """cairn — Persistent memory for AI coding agents."""
     pass
 
 
@@ -233,7 +233,7 @@ def handoffs(agent: str):
 @click.option("--agent", default="default", help="Agent name to attribute entries to")
 @click.option("--dry-run", is_flag=True, help="Preview what would be ingested without writing")
 def ingest(path: str, agent: str, dry_run: bool):
-    """Ingest a Claude Code JSONL transcript into knowledge.
+    """Ingest a JSONL transcript into knowledge.
 
     Parses the transcript offline, extracts key moments (commits, decisions,
     user instructions, file writes), and stores them in the knowledge table.
@@ -256,12 +256,12 @@ def ingest(path: str, agent: str, dry_run: bool):
 @main.command()
 @click.option("--agent", default="", help="Filter to specific agent")
 def transcripts(agent: str):
-    """List available Claude Code transcript files."""
+    """List available transcript files."""
     from cairn_ai.ingest import find_transcripts
 
     results = find_transcripts()
     if not results:
-        click.echo("No transcript files found in ~/.claude/projects/")
+        click.echo("No transcript files found.")
         return
 
     click.echo(f"Found {len(results)} transcript(s):\n")
@@ -851,7 +851,7 @@ Your name persists across sessions and reinstalls.
 ## CRITICAL: Never Use Raw SQL
 All persistence is managed through cairn's MCP tools (open_session, set_status, write_handoff, etc.).
 NEVER access .persist/persist.db directly via sqlite3 or any other means.
-If MCP tools are not available, tell the user: "cairn MCP server is not connected. Please restart Claude Code or run `cairn init` to reconfigure."
+If MCP tools are not available, tell the user: "cairn MCP server is not connected. Please restart your editor or run `cairn init` to reconfigure."
 """
 
 
@@ -949,7 +949,7 @@ def _generate_memory_md(multi_agent: bool) -> str:
     """Generate starter MEMORY.md."""
     return """# Project Memory
 
-*This file persists across Claude Code sessions. Update it as you learn about the project.*
+*This file persists across sessions. Update it as you learn about the project.*
 
 ## Key Decisions
 
@@ -1068,7 +1068,7 @@ def _configure_backup_dir(persist_path: Path, backup_dir: str = ""):
 
 
 def _configure_mcp_settings(persist_path: Path):
-    """Add cairn MCP server to .mcp.json (Claude Code's project-level MCP config)."""
+    """Add cairn MCP server to .mcp.json (project-level MCP config)."""
     import shutil
 
     mcp_file = Path(".mcp.json")
@@ -1082,7 +1082,7 @@ def _configure_mcp_settings(persist_path: Path):
 
     mcp_servers = settings.get("mcpServers", {})
 
-    # Use full path to cairn executable — venvs won't be on Claude's PATH
+    # Use full path to cairn executable — venvs won't be on the agent's PATH
     cairn_path = shutil.which("cairn") or "cairn"
     abs_persist = str(persist_path.resolve())
     was_configured = "cairn" in mcp_servers

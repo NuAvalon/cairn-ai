@@ -4,6 +4,8 @@
 
 Persistent memory for AI coding agents. Survive compaction, recover from crashes, maintain identity across sessions.
 
+Works with any MCP-compatible agent: Claude Code, Cursor, Windsurf, Cline, and others. LLM agnostic — use any model.
+
 ## Quick Start
 
 ```bash
@@ -12,13 +14,13 @@ cd your-project
 cairn init
 ```
 
-Start a new Claude Code session. Your agent now has persistent memory.
+Start a new session. Your agent now has persistent memory.
 
 `cairn init` will ask you to choose a mode. Start with Tool. When you're ready for more, run it again.
 
 ## What It Does
 
-Claude Code sessions lose context when they compact or crash. Cairn gives your agent:
+AI coding agents lose context when they compact or crash. Cairn gives your agent:
 
 - **Session journals** — automatic timestamped logs of what the agent was doing
 - **Crash detection** — knows if the last session ended cleanly or crashed
@@ -80,7 +82,7 @@ Claude Code sessions lose context when they compact or crash. Cairn gives your a
 
 | Command | What it does |
 |---------|-------------|
-| `cairn ingest <path>` | Parse a Claude Code transcript into knowledge |
+| `cairn ingest <path>` | Parse a JSONL transcript into knowledge |
 | `cairn transcripts` | List available transcript files |
 | `cairn rotate` | Archive old journals, extract findings |
 
@@ -106,14 +108,14 @@ Claude Code sessions lose context when they compact or crash. Cairn gives your a
 ## Memory Architecture
 
 ```
-Hot (always available):     Journals + Handoffs      ← what happened recently
-Warm (searchable):          Knowledge table           ← extracted findings + ingested transcripts
-Cold (archived):            journals/archive/         ← old journals, never deleted
+Hot (always available):     Journals + Handoffs      <- what happened recently
+Warm (searchable):          Knowledge table           <- extracted findings + ingested transcripts
+Cold (archived):            journals/archive/         <- old journals, never deleted
 ```
 
 **Journal rotation** (`cairn rotate`) extracts key findings from old journals before archiving them. Your agent's context stays clean while nothing is lost.
 
-**Transcript ingest** (`cairn ingest`) parses Claude Code JSONL transcripts offline and stores highlights — commits, decisions, user instructions, file writes. The agent never touches raw JSON.
+**Transcript ingest** (`cairn ingest`) parses JSONL transcripts offline and stores highlights — commits, decisions, user instructions, file writes. The agent never touches raw JSON.
 
 **Knowledge CRUD** — full lifecycle for long-term memory. `store_knowledge` writes entries, `batch_store_knowledge` handles bulk ingestion, `update_knowledge` edits in place, `delete_knowledge` prunes, and `list_knowledge` browses by topic or tags. `recall` and `vector_search` handle retrieval. Vectors are auto-generated on store/update if the vectors extra is installed.
 
@@ -139,7 +141,19 @@ After installing, tell your agent to run `embed_knowledge()` to index existing e
 
 ## How It Works
 
-Cairn runs as an MCP server alongside Claude Code. It stores everything in a local SQLite database (`.persist/persist.db`) and markdown journal files. No cloud, no telemetry, no phone-home.
+Cairn runs as an MCP server alongside your coding agent. It stores everything in a local SQLite database (`.persist/persist.db`) and markdown journal files. No cloud, no telemetry, no phone-home.
+
+## Compatibility
+
+Cairn uses the [Model Context Protocol](https://modelcontextprotocol.io/) (MCP), an open standard for tool integration. It works with any agent that supports MCP:
+
+- **Claude Code** — full support
+- **Cursor** — MCP support via settings
+- **Windsurf** — MCP support via settings
+- **Cline** — MCP support built in
+- **Any MCP client** — standard stdio transport
+
+LLM agnostic. Use Claude, GPT, Gemini, Llama, Qwen, or any other model. Cairn doesn't care what's thinking — it cares how it remembers.
 
 ## Architecture
 
