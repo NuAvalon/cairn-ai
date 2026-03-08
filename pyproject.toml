@@ -4,15 +4,15 @@ build-backend = "hatchling.build"
 
 [project]
 name = "cairn-ai"
-version = "0.3.0"
-description = "Persistent memory for AI agents — survive compaction, recover from crashes, maintain identity across sessions."
+version = "0.3.1"
+description = "Persistent memory for AI coding agents — survive compaction, recover from crashes, maintain identity across sessions."
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.10"
 authors = [
     { name = "NuAvalon" },
 ]
-keywords = ["claude", "claude-code", "mcp", "memory", "agents", "persistence", "cairn"]
+keywords = ["mcp", "memory", "agents", "persistence", "cairn", "claude", "cursor", "windsurf", "cline", "ai-agents"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
