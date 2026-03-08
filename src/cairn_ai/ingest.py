@@ -391,6 +391,334 @@ def _get_text_content(record: dict) -> str:
     return ""
 
 
+def import_all_sessions(search_dir: str = "", agent_filter: str = "",
+                        dry_run: bool = False, since: str = "",
+                        create_journals: bool = True) -> str:
+    """Bulk import Claude Code sessions into cairn memory.
+
+    Scans for JSONL session files, deduplicates against already-imported
+    sessions, extracts highlights into knowledge + creates journal entries.
+
+    Args:
+        search_dir: Directory to scan (default: ~/.claude/projects/)
+        agent_filter: Only import sessions matching this agent name
+        dry_run: Preview without writing
+        since: Only import sessions modified after this date (YYYY-MM-DD)
+        create_journals: Also create journal entries (chronological narrative)
+
+    Returns:
+        Human-readable summary of what was imported.
+    """
+    # Find all sessions
+    transcripts = find_transcripts(search_dir)
+    if not transcripts:
+        return "No session files found."
+
+    # Filter by date
+    if since:
+        transcripts = [t for t in transcripts if t["modified"] >= since]
+        if not transcripts:
+            return f"No sessions found after {since}."
+
+    # Check what's already imported (dedup by filename)
+    conn = get_db()
+    already_imported = set()
+    try:
+        rows = conn.execute(
+            "SELECT DISTINCT source FROM knowledge WHERE source LIKE 'transcript:%'"
+        ).fetchall()
+        for row in rows:
+            # source format: "transcript:UUID.jsonl"
+            already_imported.add(row[0].replace("transcript:", ""))
+    except Exception:
+        pass
+
+    # Process each session
+    total_knowledge = 0
+    total_journals = 0
+    imported_sessions = 0
+    skipped_sessions = 0
+    failed_sessions = 0
+    session_summaries = []
+
+    for t in transcripts:
+        path = Path(t["path"])
+        filename = path.name
+
+        # Skip already imported
+        if filename in already_imported:
+            skipped_sessions += 1
+            continue
+
+        # Detect agent from session content
+        agent = _detect_agent(path)
+        if agent_filter and agent != agent_filter:
+            skipped_sessions += 1
+            continue
+
+        if dry_run:
+            entries = _parse_transcript(path, agent)
+            journal_count = 0
+            if create_journals:
+                journal_entries = _extract_journal_entries(path, agent)
+                journal_count = len(journal_entries)
+
+            session_summaries.append(
+                f"  {filename[:40]:40} {agent:>10}  "
+                f"{len(entries):>3} knowledge, {journal_count:>3} journal"
+            )
+            total_knowledge += len(entries)
+            total_journals += journal_count
+            imported_sessions += 1
+            continue
+
+        # Ingest knowledge entries
+        try:
+            entries = _parse_transcript(path, agent)
+            for entry in entries:
+                content, _ = _prepare_content(entry["content"])
+                conn.execute(
+                    """INSERT INTO knowledge (agent, topic, title, content, tags, source, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (entry["agent"], "transcript", entry["title"],
+                     content, entry["tags"], f"transcript:{filename}",
+                     entry["ts"]),
+                )
+            total_knowledge += len(entries)
+
+            # Create journal entries
+            if create_journals:
+                journal_entries = _extract_journal_entries(path, agent)
+                for je in journal_entries:
+                    conn.execute(
+                        """INSERT INTO journal_entries (agent, ts, status, task, finding)
+                           VALUES (?, ?, ?, ?, ?)""",
+                        (je["agent"], je["ts"], je["status"],
+                         je["task"], je["finding"]),
+                    )
+                total_journals += len(journal_entries)
+
+            conn.commit()
+            imported_sessions += 1
+            session_summaries.append(
+                f"  {filename[:40]:40} {agent:>10}  "
+                f"{len(entries):>3} knowledge, {len(journal_entries) if create_journals else 0:>3} journal"
+            )
+
+        except Exception as e:
+            failed_sessions += 1
+            session_summaries.append(f"  {filename[:40]:40} FAILED: {e}")
+
+    conn.close()
+
+    # Build summary
+    prefix = "DRY RUN — would import" if dry_run else "Imported"
+    lines = [
+        f"\n{prefix} {imported_sessions} session(s):\n",
+    ]
+    if session_summaries:
+        lines.append(f"  {'Session':40} {'Agent':>10}  Entries")
+        lines.append(f"  {'─' * 40} {'─' * 10}  {'─' * 25}")
+        lines.extend(session_summaries)
+    lines.append("")
+    lines.append(f"  Knowledge entries: {total_knowledge}")
+    lines.append(f"  Journal entries:   {total_journals}")
+    lines.append(f"  Skipped (already imported or filtered): {skipped_sessions}")
+    if failed_sessions:
+        lines.append(f"  Failed: {failed_sessions}")
+    lines.append("")
+
+    if dry_run:
+        lines.append("Run without --dry-run to import.")
+    else:
+        lines.append("Done. Your agent now remembers these sessions.")
+
+    return "\n".join(lines)
+
+
+def _detect_agent(path: Path) -> str:
+    """Detect which agent a session belongs to by scanning early messages.
+
+    Checks filename patterns first (agent_<name> sessions), then scans
+    content for summon prompts, identity references, and greeting patterns.
+    """
+    agent_names = {"archie", "apollo", "athena", "hypatia"}
+
+    # Check filename first — fork/agent sessions often have the name
+    fname = path.stem.lower()
+    for name in agent_names:
+        if name in fname:
+            return name
+
+    try:
+        with open(path) as f:
+            lines_checked = 0
+            for line in f:
+                if lines_checked > 30:
+                    break
+                lines_checked += 1
+
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+                # Check slug field (e.g. "purring-dancing-crescent")
+                # and sessionId for agent hints
+                slug = record.get("slug", "")
+
+                msg = record.get("message", {})
+                if not isinstance(msg, dict):
+                    continue
+
+                # Check tool inputs for agent references (e.g. Read diary/apollo.md)
+                content_blocks = msg.get("content", [])
+                if isinstance(content_blocks, list):
+                    for block in content_blocks:
+                        if isinstance(block, dict):
+                            # Tool use inputs
+                            tool_input = block.get("input", {})
+                            if isinstance(tool_input, dict):
+                                for v in tool_input.values():
+                                    if isinstance(v, str):
+                                        for name in agent_names:
+                                            if (f"/{name}." in v or f"/{name}/" in v or
+                                                    f"_{name}." in v or f"_{name}/" in v):
+                                                return name
+                            # Tool result content
+                            tr = block.get("content", "")
+                            if isinstance(tr, str) and len(tr) > 20:
+                                for name in agent_names:
+                                    if f"— {name.title()}" in tr or f"# {name.title()}" in tr:
+                                        return name
+
+                content = _get_text_content(msg)
+                if not content:
+                    continue
+
+                lower = content.lower()
+
+                # Check for agent name mentions
+                for name in agent_names:
+                    # Direct address, summon prompts, orientation refs
+                    if (f"hey {name}" in lower or f"{name}," in lower[:200] or
+                            f"{name}." in lower[:200] or f"you are {name}" in lower or
+                            f"who: {name}" in lower or
+                            f"orientation/{name}" in lower or
+                            f"diary/{name}" in lower or
+                            f"last_thoughts_{name}" in lower or
+                            f"memory/{name}" in lower or
+                            f"agent_{name}" in lower or
+                            f"from_agent=\"{name}\"" in lower or
+                            f"from_agent='{name}'" in lower or
+                            f"i'm {name}" in lower or
+                            f"i am {name}" in lower or
+                            f"— {name}" in lower[:200]):
+                        return name
+
+    except Exception:
+        pass
+
+    return "default"
+
+
+def _extract_journal_entries(path: Path, agent: str) -> list[dict]:
+    """Extract chronological journal entries from a session.
+
+    Creates a narrative timeline: what happened, when, in what order.
+    Captures user instructions, key decisions, commits, and status changes.
+    More granular than knowledge extraction — this is the "what happened" log.
+    """
+    entries = []
+    seen_ts = set()
+
+    try:
+        with open(path) as f:
+            for line in f:
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+                msg = record.get("message", {})
+                if not isinstance(msg, dict):
+                    continue
+
+                role = msg.get("role", "") or record.get("type", "")
+                ts = record.get("timestamp", "")
+                if not ts:
+                    continue
+
+                # Dedup by timestamp (multiple blocks can share one)
+                ts_key = ts[:19]  # Truncate to second
+                if ts_key in seen_ts:
+                    continue
+
+                content = _get_text_content(msg)
+                if not content or len(content) < 20:
+                    continue
+
+                # User messages → task context
+                if role in ("user", "human"):
+                    # Skip tool results
+                    content_blocks = msg.get("content", [])
+                    if isinstance(content_blocks, list):
+                        has_tool_result = any(
+                            isinstance(b, dict) and b.get("type") == "tool_result"
+                            for b in content_blocks
+                        )
+                        if has_tool_result:
+                            continue
+
+                    seen_ts.add(ts_key)
+                    entries.append({
+                        "agent": agent,
+                        "ts": ts,
+                        "status": "active",
+                        "task": f"User: {content[:200]}",
+                        "finding": "",
+                    })
+
+                # Assistant substantive messages → findings
+                elif role == "assistant":
+                    if _is_mechanical(content):
+                        continue
+                    lower = content.lower()
+                    has_substance = any(m in lower[:500] for m in _SUBSTANTIVE_MARKERS)
+                    if has_substance and len(content) > _MIN_SUBSTANTIVE_LEN:
+                        seen_ts.add(ts_key)
+                        entries.append({
+                            "agent": agent,
+                            "ts": ts,
+                            "status": "active",
+                            "task": "",
+                            "finding": content[:500],
+                        })
+
+                    # Check for commits in tool use blocks
+                    content_blocks = msg.get("content", [])
+                    if isinstance(content_blocks, list):
+                        for block in content_blocks:
+                            if not isinstance(block, dict):
+                                continue
+                            if block.get("name") == "Bash":
+                                cmd = block.get("input", {}).get("command", "")
+                                if "git commit" in cmd:
+                                    commit_msg = _extract_commit_msg(cmd)
+                                    entries.append({
+                                        "agent": agent,
+                                        "ts": ts,
+                                        "status": "active",
+                                        "task": f"Committed: {commit_msg[:200]}",
+                                        "finding": "",
+                                    })
+
+    except Exception:
+        pass
+
+    return entries
+
+
 def find_transcripts(project_dir: str = "") -> list[dict]:
     """Find JSONL transcript files.
 
@@ -411,10 +739,23 @@ def find_transcripts(project_dir: str = "") -> list[dict]:
         if claude_dir.exists():
             search_paths.append(claude_dir)
 
+    # Skip fork artifacts — these are copies of the same session
+    _skip_suffixes = {".trimmed.jsonl", ".fork-ready.jsonl", ".old.jsonl",
+                      ".backup.jsonl", ".pre-fork.jsonl"}
+
     results = []
     for search_path in search_paths:
         for jsonl in search_path.rglob("*.jsonl"):
+            # Skip fork artifacts and compressed files
+            name = jsonl.name
+            if any(name.endswith(s) for s in _skip_suffixes):
+                continue
+            if name.endswith(".gz"):
+                continue
             stat = jsonl.stat()
+            # Skip tiny files (< 1KB — usually empty or stubs)
+            if stat.st_size < 1024:
+                continue
             results.append({
                 "path": str(jsonl),
                 "size_kb": stat.st_size / 1024,

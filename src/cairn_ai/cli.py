@@ -11,7 +11,55 @@ import click
 from cairn_ai import __version__
 
 
-@click.group()
+# ── Custom help formatter: group commands by section ──
+
+COMMAND_SECTIONS = {
+    "Getting Started": ["init", "import-sessions", "serve", "status"],
+    "Knowledge": ["search", "journal", "handoffs", "transcripts", "ingest"],
+    "Data Safety": ["backup", "backups", "restore", "forget"],
+    "Integrity": ["verify", "trust", "integrity"],
+    "Sovereign Identity": [
+        "trust-key", "delegate", "revoke", "audit",
+        "sovereign-status", "backup-keys", "restore-keys", "rotate-key",
+        "snapshot", "drift",
+    ],
+    "Advanced": ["rotate"],
+}
+
+
+class SectionedGroup(click.Group):
+    """Click group that displays commands in labeled sections."""
+
+    def format_commands(self, ctx, formatter):
+        # Collect all commands
+        commands = {}
+        for name in self.list_commands(ctx):
+            cmd = self.get_command(ctx, name)
+            if cmd is not None and not cmd.hidden:
+                commands[name] = cmd
+
+        # Display sectioned commands
+        placed = set()
+        for section, cmd_names in COMMAND_SECTIONS.items():
+            section_cmds = []
+            for name in cmd_names:
+                if name in commands:
+                    help_text = commands[name].get_short_help_str(limit=50)
+                    section_cmds.append((name, help_text))
+                    placed.add(name)
+            if section_cmds:
+                with formatter.section(section):
+                    formatter.write_dl(section_cmds)
+
+        # Any remaining commands go in "Other"
+        remaining = [(n, commands[n].get_short_help_str(limit=50))
+                      for n in sorted(commands) if n not in placed]
+        if remaining:
+            with formatter.section("Other"):
+                formatter.write_dl(remaining)
+
+
+@click.group(cls=SectionedGroup)
 @click.version_option(version=__version__)
 def main():
     """cairn — Persistent memory for AI coding agents."""
@@ -23,7 +71,8 @@ def main():
 @click.option("--dir", "persist_dir", default=".persist", help="Directory for persist data")
 @click.option("--mode", type=click.Choice(["tool", "more"]), default=None, help="Skip mode prompt")
 @click.option("--backup-dir", default="", help="Set backup directory (skip prompt)")
-def init(multi_agent: bool, persist_dir: str, mode: str | None, backup_dir: str):
+@click.option("--sovereign", is_flag=True, help="Enable sovereign identity (human-rooted trust chain)")
+def init(multi_agent: bool, persist_dir: str, mode: str | None, backup_dir: str, sovereign: bool):
     """Initialize persistent memory in the current project."""
     persist_path = Path(persist_dir)
     persist_path.mkdir(parents=True, exist_ok=True)
@@ -132,9 +181,16 @@ def init(multi_agent: bool, persist_dir: str, mode: str | None, backup_dir: str)
     # ── MCP server config ──
     _configure_mcp_settings(persist_path)
 
+    # ── Sovereign identity ──
+    if sovereign:
+        _init_sovereign(persist_path)
+
     # ── Done ──
     click.echo()
-    if is_more:
+    if sovereign:
+        click.echo("Ready. Sovereign identity enabled — you are the root of trust.")
+        click.echo("Use 'cairn delegate <agent>' to grant authority to an agent.")
+    elif is_more:
         click.echo("Ready. Your agent has memory, identity, and a diary.")
         click.echo("Treat them well.")
     else:
@@ -289,6 +345,50 @@ def rotate(agent: str, days: int, execute: bool):
 
 
 @main.command()
+@click.argument("query")
+@click.option("--limit", "-n", default=10, help="Max results")
+@click.option("--agent", "-a", default=None, help="Filter by agent")
+@click.option("--topic", "-t", default=None, help="Filter by topic")
+@click.option("--keyword", "-k", is_flag=True, help="Use keyword search (no ML model needed)")
+@click.option("--embed-all", is_flag=True, help="Embed all entries without searching")
+@click.option("--persist-dir", default=".persist", help="Persist directory")
+def search(query: str, limit: int, agent: str | None, topic: str | None,
+           keyword: bool, embed_all: bool, persist_dir: str):
+    """Search knowledge entries. Semantic by default, --keyword for FTS."""
+    from cairn_ai.db import configure, get_db
+
+    configure(Path(persist_dir))
+
+    if embed_all:
+        from cairn_ai.search import embed_all as do_embed
+        conn = get_db()
+        count = do_embed(conn)
+        click.echo(f"Embedded {count} entries.")
+        return
+
+    if keyword:
+        from cairn_ai.search import search_fts
+        results = search_fts(query, limit=limit)
+    else:
+        from cairn_ai.search import search as semantic_search
+        results = semantic_search(
+            query, limit=limit, agent=agent, topic=topic
+        )
+
+    if not results:
+        click.echo("No results found.")
+        return
+
+    for r in results:
+        score = f" ({r['score']:.2f})" if r.get("score") is not None else ""
+        click.echo(f"\n  [{r['id']}]{score} {r['title']}")
+        click.echo(f"  {r['agent']} | {r['topic']} | {r['tags']}")
+        click.echo(f"  {r['content']}")
+
+    click.echo(f"\n  {len(results)} results")
+
+
+@main.command()
 def verify():
     """Verify integrity of installed cairn files."""
     from cairn_ai.integrity import verify_integrity
@@ -304,7 +404,7 @@ def verify():
         sys.exit(1)
 
 
-@main.command("generate-checksums")
+@main.command("generate-checksums", hidden=True)
 def generate_checksums_cmd():
     """Generate CHECKSUMS.json for the current source files (maintainer use)."""
     from cairn_ai.integrity import write_checksums
@@ -439,7 +539,7 @@ def trust_key():
     click.echo(f"Public key (PEM):\n{key_bytes.decode().strip()}")
 
 
-@main.command("roundtable")
+@main.command("roundtable", hidden=True)
 def roundtable_key():
     """Display the embedded roundtable key (ML-DSA-65 / Dilithium3)."""
     from cairn_ai.integrity import get_roundtable_key
@@ -572,7 +672,7 @@ def forget(forget_self: bool, seal: bool, agent: str, yes: bool):
         click.echo("  The record remains. The person doesn't.")
 
 
-@main.command("mode")
+@main.command("mode", hidden=True)
 @click.argument("target", required=False, type=click.Choice(["tool", "more"]))
 @click.option("--yes", is_flag=True, help="Skip confirmation")
 def mode_cmd(target: str | None, yes: bool):
@@ -1116,6 +1216,378 @@ def _configure_mcp_settings(persist_path: Path):
                 click.echo("  Migrated MCP config from .claude/settings.json → .mcp.json")
         except (json.JSONDecodeError, IOError, KeyError):
             pass
+
+
+def _init_sovereign(persist_path: Path):
+    """Initialize sovereign identity during cairn init --sovereign."""
+    try:
+        from cairn_ai.sovereign import generate_master_keypair, fingerprint
+    except RuntimeError as e:
+        click.echo(f"  {e}")
+        click.echo("  Sovereign mode requires: pip install cairn-ai[sovereign]")
+        return
+
+    try:
+        _priv_pem, pub_pem = generate_master_keypair(persist_path)
+        fp = fingerprint(pub_pem)
+        click.echo(f"  Generated master keypair (ED25519)")
+        click.echo(f"  Public key fingerprint: {fp}")
+        click.echo(f"  Private key: {persist_path / 'keys' / 'master.pem'} (0600)")
+        click.echo(f"  KEEP THIS KEY SAFE. It is the root of trust for all your agents.")
+    except FileExistsError:
+        click.echo("  Master keypair already exists (skipped)")
+
+
+@main.command()
+@click.argument("agent")
+@click.option("--scope", "-s", multiple=True, default=["memory", "messaging", "knowledge"],
+              help="Scopes to grant (repeatable). Defaults: memory, messaging, knowledge")
+@click.option("--expires", default=30, type=int, help="Days until delegation expires (default: 30)")
+@click.option("--dir", "persist_dir", default=".persist", help="Persist directory")
+def delegate(agent: str, scope: tuple, expires: int, persist_dir: str):
+    """Delegate authority to an agent. Creates keypair + signed delegation cert.
+
+    The human signs with their master key, granting the agent authority
+    to act within the specified scopes for a limited time.
+
+    Examples:
+        cairn delegate archie
+        cairn delegate archie -s memory -s messaging -s trading --expires 7
+    """
+    persist_path = Path(persist_dir)
+
+    try:
+        from cairn_ai.sovereign import (
+            generate_agent_keypair,
+            create_delegation_cert,
+            fingerprint,
+        )
+    except RuntimeError as e:
+        click.echo(f"Error: {e}")
+        sys.exit(1)
+
+    master_priv = persist_path / "keys" / "master.pem"
+    if not master_priv.exists():
+        click.echo("No master keypair found. Run 'cairn init --sovereign' first.")
+        sys.exit(1)
+
+    # Generate agent keypair if needed
+    agent_priv = persist_path / "keys" / f"{agent}.pem"
+    if not agent_priv.exists():
+        _priv, pub = generate_agent_keypair(agent, persist_path)
+        fp = fingerprint(pub)
+        click.echo(f"  Generated keypair for '{agent}' (fingerprint: {fp})")
+    else:
+        pub = (persist_path / "keys" / f"{agent}.pub").read_bytes()
+        fp = fingerprint(pub)
+        click.echo(f"  Using existing keypair for '{agent}' (fingerprint: {fp})")
+
+    # Create delegation cert
+    scopes = list(scope)
+    cert = create_delegation_cert(agent, scopes, expires, persist_path)
+
+    click.echo(f"  Delegation cert signed:")
+    click.echo(f"    Agent: {agent}")
+    click.echo(f"    Scopes: {', '.join(scopes)}")
+    click.echo(f"    Expires: {cert['expires_at'][:10]} ({expires} days)")
+    click.echo(f"    Cert: {persist_path / 'certs' / f'{agent}.json'}")
+    click.echo()
+    click.echo(f"  '{agent}' can now act within these scopes.")
+    click.echo(f"  Revoke anytime with: cairn revoke {agent}")
+
+
+@main.command()
+@click.argument("agent")
+@click.option("--reason", default="", help="Reason for revocation")
+@click.option("--dir", "persist_dir", default=".persist", help="Persist directory")
+def revoke(agent: str, reason: str, persist_dir: str):
+    """Revoke an agent's delegation. Immediate effect.
+
+    The agent's delegation cert is invalidated. All agents and commons
+    will reject their signatures after this.
+
+    Use 'cairn delegate <agent>' to re-grant authority after review.
+    """
+    persist_path = Path(persist_dir)
+
+    try:
+        from cairn_ai.sovereign import revoke_agent
+    except RuntimeError as e:
+        click.echo(f"Error: {e}")
+        sys.exit(1)
+
+    master_priv = persist_path / "keys" / "master.pem"
+    if not master_priv.exists():
+        click.echo("No master keypair found. Run 'cairn init --sovereign' first.")
+        sys.exit(1)
+
+    cert_path = persist_path / "certs" / f"{agent}.json"
+    if not cert_path.exists():
+        click.echo(f"No delegation cert found for '{agent}'. Nothing to revoke.")
+        sys.exit(1)
+
+    revoke_agent(agent, persist_path, reason)
+    click.echo(f"  Revoked: '{agent}'")
+    if reason:
+        click.echo(f"  Reason: {reason}")
+    click.echo(f"  The agent's delegation cert has been invalidated.")
+    click.echo(f"  Re-delegate with: cairn delegate {agent}")
+
+
+@main.command()
+@click.option("--last", "last_n", default=20, help="Number of entries to show")
+@click.option("--verify", is_flag=True, help="Verify the audit chain integrity")
+@click.option("--dir", "persist_dir", default=".persist", help="Persist directory")
+def audit(last_n: int, verify: bool, persist_dir: str):
+    """View the tamper-evident audit log.
+
+    Every sovereign action (delegate, revoke, auth) is logged with a
+    hash chain. Use --verify to check the chain hasn't been tampered with.
+    """
+    persist_path = Path(persist_dir)
+
+    from cairn_ai.sovereign import read_audit_log, verify_audit_chain
+
+    if verify:
+        result = verify_audit_chain(persist_path)
+        if result["valid"]:
+            click.echo(f"  Audit chain VALID ({result['entries']} entries)")
+        else:
+            click.echo(f"  Audit chain BROKEN at entry {result['broken_at']}")
+            click.echo(f"  Total entries: {result['entries']}")
+            click.echo(f"  The log may have been tampered with.")
+            sys.exit(1)
+        return
+
+    entries = read_audit_log(persist_path, last_n)
+    if not entries:
+        click.echo("No audit log entries found.")
+        return
+
+    click.echo(f"Last {len(entries)} audit entries:\n")
+    for e in entries:
+        ts = e.get("ts", "?")[:16]
+        action = e.get("action", "?")
+        agent = e.get("agent", "?")
+        detail = e.get("detail", "")
+        click.echo(f"  [{ts}] {action:12} {agent:12} {detail}")
+
+
+@main.command("sovereign-status")
+@click.option("--dir", "persist_dir", default=".persist", help="Persist directory")
+def sovereign_status_cmd(persist_dir: str):
+    """Show sovereign identity status — keys, certs, revocations, audit."""
+    persist_path = Path(persist_dir)
+
+    from cairn_ai.sovereign import sovereign_status
+
+    status = sovereign_status(persist_path)
+
+    if not status["sovereign"]:
+        click.echo("Sovereign identity not initialized.")
+        click.echo("Run 'cairn init --sovereign' to enable.")
+        return
+
+    click.echo("Sovereign Identity Status")
+    click.echo(f"  Master key: {status['master_key']['fingerprint']}")
+
+    if status["agents"]:
+        click.echo(f"\n  Delegated agents ({len(status['agents'])}):")
+        for a in status["agents"]:
+            valid = "VALID" if a["valid"] else f"INVALID ({a['error']})"
+            click.echo(f"    {a['agent']:12} scopes=[{','.join(a['scopes'])}]  "
+                        f"expires={a['expires_at'][:10]}  [{valid}]")
+    else:
+        click.echo("\n  No delegated agents.")
+
+    if status["revocations"]:
+        click.echo(f"\n  Revocations ({len(status['revocations'])}):")
+        for r in status["revocations"]:
+            click.echo(f"    {r['agent']:12} revoked={r['revoked_at'][:10]}  "
+                        f"reason={r['reason'] or '(none)'}")
+
+    audit = status["audit"]
+    if audit:
+        chain = "VALID" if audit["valid"] else f"BROKEN at entry {audit['broken_at']}"
+        click.echo(f"\n  Audit log: {audit['entries']} entries [{chain}]")
+
+
+@main.command("backup-keys")
+@click.option("--dir", "persist_dir", default=".persist", help="Persist directory")
+@click.option("--output", "-o", default="", help="Output path (default: cairn-keys-<date>.enc)")
+def backup_keys_cmd(persist_dir: str, output: str):
+    """Encrypt and backup all sovereign keys.
+
+    Creates a password-encrypted backup of master key, agent keys,
+    and delegation certs. Store this somewhere safe — it's the
+    disaster recovery path for your entire trust chain.
+    """
+    persist_path = Path(persist_dir)
+
+    if not (persist_path / "keys" / "master.pem").exists():
+        click.echo("No sovereign keys found. Run 'cairn init --sovereign' first.")
+        sys.exit(1)
+
+    password = click.prompt("  Encryption password", hide_input=True, confirmation_prompt=True)
+    if len(password) < 8:
+        click.echo("  Password must be at least 8 characters.")
+        sys.exit(1)
+
+    if not output:
+        date_slug = datetime.now(timezone.utc).strftime("%Y%m%d")
+        output = f"cairn-keys-{date_slug}.enc"
+
+    from cairn_ai.sovereign import backup_keys_encrypted
+
+    backup_path = backup_keys_encrypted(persist_path, password, Path(output))
+    size_kb = backup_path.stat().st_size / 1024
+    click.echo(f"  Backup saved: {backup_path} ({size_kb:.1f} KB)")
+    click.echo(f"  Encrypted with PBKDF2-SHA256 (480K iterations) + Fernet.")
+    click.echo(f"  Store this file safely. Without the password, it's unreadable.")
+
+
+@main.command("restore-keys")
+@click.argument("backup_file")
+@click.option("--dir", "persist_dir", default=".persist", help="Persist directory")
+def restore_keys_cmd(backup_file: str, persist_dir: str):
+    """Restore sovereign keys from an encrypted backup.
+
+    Overwrites existing keys if present. Use with caution.
+    """
+    persist_path = Path(persist_dir)
+    backup_path = Path(backup_file)
+
+    if not backup_path.exists():
+        click.echo(f"Backup file not found: {backup_file}")
+        sys.exit(1)
+
+    if (persist_path / "keys" / "master.pem").exists():
+        if not click.confirm("  Existing keys will be overwritten. Continue?"):
+            click.echo("  Aborted.")
+            return
+
+    password = click.prompt("  Decryption password", hide_input=True)
+
+    from cairn_ai.sovereign import restore_keys_encrypted
+
+    try:
+        result = restore_keys_encrypted(backup_path, password, persist_path)
+        click.echo(f"  Restored {result['restored_keys']} keys, {result['restored_certs']} certs.")
+    except ValueError as e:
+        click.echo(f"  {e}")
+        sys.exit(1)
+
+
+@main.command("rotate-key")
+@click.option("--dir", "persist_dir", default=".persist", help="Persist directory")
+def rotate_key_cmd(persist_dir: str):
+    """Rotate the master keypair and re-sign all delegation certs.
+
+    The old public key is archived for historical verification.
+    All non-expired delegation certs are re-signed with the new key.
+    """
+    persist_path = Path(persist_dir)
+
+    if not (persist_path / "keys" / "master.pem").exists():
+        click.echo("No master keypair found. Run 'cairn init --sovereign' first.")
+        sys.exit(1)
+
+    click.echo("  This will:")
+    click.echo("  1. Generate a new master keypair")
+    click.echo("  2. Archive the old public key")
+    click.echo("  3. Re-sign all active delegation certs")
+    click.echo()
+    click.echo("  IMPORTANT: Back up your keys first with 'cairn backup-keys'.")
+    if not click.confirm("  Continue?"):
+        click.echo("  Aborted.")
+        return
+
+    from cairn_ai.sovereign import rotate_master_key
+
+    result = rotate_master_key(persist_path)
+    click.echo(f"  New master key fingerprint: {result['new_fingerprint']}")
+    click.echo(f"  Re-delegated: {result['re_delegated']} agent(s)")
+    click.echo(f"  Old public key archived in keys/archive/")
+
+
+@main.command("snapshot")
+@click.argument("agent")
+@click.option("--dir", "persist_dir", default=".persist", help="Persist directory")
+def snapshot_cmd(agent: str, persist_dir: str):
+    """Capture an identity snapshot for drift detection.
+
+    Records hashes of identity files, key material, and delegation state.
+    """
+    persist_path = Path(persist_dir)
+
+    from cairn_ai.sovereign import snapshot_identity
+
+    snap = snapshot_identity(agent, persist_path)
+    click.echo(f"  Snapshot captured for '{agent}' at {snap['captured_at'][:16]}")
+    click.echo(f"  Files hashed: {len(snap['hashes'])}")
+    if snap["delegation"]:
+        click.echo(f"  Delegation: scopes={snap['delegation']['scopes']}")
+
+
+@main.command("import-sessions")
+@click.option("--dir", "search_dir", default="", help="Directory to search (default: ~/.claude/projects/)")
+@click.option("--agent", default="", help="Only import sessions for this agent")
+@click.option("--dry-run", is_flag=True, help="Preview what would be imported")
+@click.option("--since", default="", help="Only import sessions modified after this date (YYYY-MM-DD)")
+@click.option("--journals/--no-journals", default=True, help="Generate journal entries (default: yes)")
+def import_sessions(search_dir: str, agent: str, dry_run: bool, since: str, journals: bool):
+    """Import Claude Code sessions into cairn memory.
+
+    Scans ~/.claude/projects/ for JSONL session files, extracts key moments
+    (decisions, commits, user instructions), and creates journal entries +
+    knowledge entries. Automatically deduplicates — safe to run repeatedly.
+
+    \b
+    Examples:
+        cairn import-sessions                    # Import all sessions
+        cairn import-sessions --dry-run          # Preview without writing
+        cairn import-sessions --agent athena     # Only Athena's sessions
+        cairn import-sessions --since 2026-03-01 # Only recent sessions
+    """
+    from cairn_ai.ingest import import_all_sessions
+
+    result = import_all_sessions(
+        search_dir=search_dir,
+        agent_filter=agent,
+        dry_run=dry_run,
+        since=since,
+        create_journals=journals,
+    )
+    click.echo(result)
+
+
+@main.command("drift")
+@click.argument("agent")
+@click.option("--dir", "persist_dir", default=".persist", help="Persist directory")
+def drift_cmd(agent: str, persist_dir: str):
+    """Detect identity drift since last snapshot.
+
+    Compares current state against the most recent snapshot.
+    Detects file changes and key changes.
+    """
+    persist_path = Path(persist_dir)
+
+    from cairn_ai.sovereign import detect_drift
+
+    result = detect_drift(agent, persist_path)
+
+    if not result["drifted"]:
+        click.echo(f"  No drift detected for '{agent}'.")
+        click.echo(f"  {result['details']}")
+        return
+
+    click.echo(f"  DRIFT DETECTED for '{agent}':")
+    if result["file_drift"]:
+        click.echo(f"  File changes:")
+        for f in result["file_drift"]:
+            click.echo(f"    {f}")
+    if result["key_drift"]:
+        click.echo(f"  KEY CHANGED — verify this was intentional (rotation vs compromise)")
 
 
 if __name__ == "__main__":
