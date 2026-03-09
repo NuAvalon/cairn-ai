@@ -92,7 +92,7 @@ def read_journal_file(agent: str, date: str = "") -> str:
             if journals:
                 available = [j.stem.split("_", 1)[1] for j in journals[:5]]
                 return f"No journal for {agent} on {date}. Recent journals: {', '.join(available)}"
-        return f"No journal found for {agent}. Use set_status() to start journaling."
+        return f"No journal entries yet for {agent}. Start a session — your agent will journal automatically."
 
     content = journal_file.read_text()
     if len(content) > 8000:

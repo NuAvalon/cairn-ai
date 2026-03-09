@@ -217,7 +217,7 @@ def serve(persist_dir: str):
 @click.option("--agent", default="default", help="Agent name")
 def status(agent: str):
     """Show agent status and last activity."""
-    from cairn_ai.db import get_db, get_db_path
+    from cairn_ai.db import get_db, get_db_path, load_lifecycle
 
     db_path = get_db_path()
     if not db_path.exists():
@@ -228,18 +228,56 @@ def status(agent: str):
     row = conn.execute(
         "SELECT * FROM agent_status WHERE agent = ?", (agent,)
     ).fetchone()
+
+    # Session stats from lifecycle
+    lifecycle = load_lifecycle()
+    agent_sessions = [s for s in lifecycle.get("sessions", []) if s.get("agent") == agent]
+    total_sessions = len(agent_sessions)
+    crashes = sum(1 for s in agent_sessions if s.get("close_type") == "crash")
+
+    # Last session health
+    last_session_info = ""
+    if agent_sessions:
+        last = agent_sessions[-1]
+        close_type = last.get("close_type")
+        if close_type is None:
+            last_session_info = "(active)"
+        elif close_type == "crash":
+            last_session_info = "(CRASH detected)"
+        elif close_type == "handoff":
+            last_session_info = "(clean handoff)"
+        elif close_type == "compacted":
+            last_session_info = "(compacted)"
+        else:
+            last_session_info = f"({close_type})"
+
+    # Knowledge count
+    knowledge_row = conn.execute(
+        "SELECT COUNT(*) as cnt, COUNT(DISTINCT topic) as topics FROM knowledge WHERE agent = ?",
+        (agent,)
+    ).fetchone()
+    knowledge_count = knowledge_row["cnt"] if knowledge_row else 0
+    topic_count = knowledge_row["topics"] if knowledge_row else 0
+
     conn.close()
 
-    if not row:
-        click.echo(f"No status recorded for agent '{agent}'.")
+    if not row and total_sessions == 0:
+        click.echo(f"Agent: {agent}")
+        click.echo(f"  No sessions yet. Start your agent — cairn is ready.")
         return
 
     click.echo(f"Agent: {agent}")
-    click.echo(f"  Status: {row['status']}")
-    click.echo(f"  Task: {row['current_task'] or '(none)'}")
-    click.echo(f"  Last finding: {row['last_finding'] or '(none)'}")
-    click.echo(f"  Updated: {row['updated_at']}")
-    click.echo(f"  Calls since checkpoint: {row['tool_calls_since_checkpoint'] or 0}")
+    if row:
+        click.echo(f"  Status: {row['status']}")
+        click.echo(f"  Task: {row['current_task'] or '(none)'}")
+        if row['last_finding']:
+            click.echo(f"  Last finding: {row['last_finding']}")
+        click.echo(f"  Updated: {row['updated_at']} {last_session_info}")
+    if total_sessions > 0:
+        crash_str = f", {crashes} crashes recovered" if crashes else ""
+        click.echo(f"  Sessions: {total_sessions} total{crash_str}")
+    if knowledge_count > 0:
+        click.echo(f"  Knowledge: {knowledge_count} entries across {topic_count} topics")
 
 
 @main.command()
