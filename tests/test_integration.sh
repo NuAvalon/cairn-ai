@@ -49,9 +49,23 @@ venv/bin/cairn generate-checksums
 venv/bin/cairn verify
 echo "  OK"
 
-echo "[7/7] cairn --help sections..."
+echo "[7/8] cairn --help sections..."
 venv/bin/cairn --help | grep -q "Getting Started:" || { echo "FAIL: help sections missing"; exit 1; }
 venv/bin/cairn --help | grep -q "Sovereign Identity:" || { echo "FAIL: sovereign section missing"; exit 1; }
+echo "  OK"
+
+echo "[8/8] cairn init --editor cursor..."
+EDITOR_DIR=$(mktemp -d)
+VENV="$TEST_DIR/venv"
+cd "$EDITOR_DIR"
+"$VENV/bin/cairn" init --mode tool --dir .persist --editor cursor
+test -f .mcp.json || { echo "FAIL: no .mcp.json"; exit 1; }
+test -f .cursor/mcp.json || { echo "FAIL: no .cursor/mcp.json"; exit 1; }
+# Verify both configs have the cairn server entry
+grep -q '"cairn"' .mcp.json || { echo "FAIL: .mcp.json missing cairn entry"; exit 1; }
+grep -q '"cairn"' .cursor/mcp.json || { echo "FAIL: .cursor/mcp.json missing cairn entry"; exit 1; }
+cd "$TEST_DIR"
+rm -rf "$EDITOR_DIR"
 echo "  OK"
 
 echo ""
