@@ -165,15 +165,19 @@ def update_identity_checksum(persist_dir: Path, filename: str) -> bool:
     return True
 
 
-def init_identity_checksums(persist_dir: Path):
+def init_identity_checksums(persist_dir: Path) -> int:
     """Compute and store checksums for all protected identity files.
 
     Called during 'cairn init' and after file creation.
+    Returns number of files checksummed.
     """
+    count = 0
     for filename in PROTECTED_FILES:
         file_path = persist_dir / filename
         if file_path.exists():
             update_identity_checksum(persist_dir, filename)
+            count += 1
+    return count
 
 
 def get_trust_key() -> bytes | None:

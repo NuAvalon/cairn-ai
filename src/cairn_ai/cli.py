@@ -174,8 +174,11 @@ def init(multi_agent: bool, persist_dir: str, mode: str | None, backup_dir: str,
     # ── Integrity checksums ──
     from cairn_ai.integrity import init_identity_checksums
 
-    init_identity_checksums(persist_path)
-    click.echo("  Computed integrity checksums for identity files")
+    n_checksummed = init_identity_checksums(persist_path)
+    if n_checksummed:
+        click.echo(f"  Computed integrity checksums for {n_checksummed} identity file(s)")
+    else:
+        click.echo("  Integrity checksums ready (identity files created on first session)")
 
     # ── Backup directory ──
     _configure_backup_dir(persist_path, backup_dir=backup_dir)
@@ -548,7 +551,7 @@ def integrity_status(verify: bool):
     result = check_identity_integrity(get_persist_dir())
 
     if result["status"] == "no_checksums":
-        click.echo("No integrity checksums found. Run `cairn init` first.")
+        click.echo("No identity files to check yet. Checksums are created when your agent first writes principal.md or mission.md.")
         return
 
     click.echo(f"Status: {result['status'].upper()}")
