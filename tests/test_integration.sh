@@ -20,8 +20,8 @@ test -f .persist/persist.db || { echo "FAIL: no persist.db"; exit 1; }
 test -f CLAUDE.md || { echo "FAIL: no CLAUDE.md"; exit 1; }
 echo "  OK"
 
-echo "[3/7] cairn init --sovereign..."
-venv/bin/cairn init --sovereign --dir .persist
+echo "[3/7] cairn init --svrnty..."
+venv/bin/cairn init --svrnty --dir .persist
 test -d .persist/keys || { echo "FAIL: no keys dir"; exit 1; }
 echo "  OK"
 
@@ -51,7 +51,7 @@ echo "  OK"
 
 echo "[7/8] cairn --help sections..."
 venv/bin/cairn --help | grep -q "Getting Started:" || { echo "FAIL: help sections missing"; exit 1; }
-venv/bin/cairn --help | grep -q "Sovereign Identity:" || { echo "FAIL: sovereign section missing"; exit 1; }
+venv/bin/cairn --help | grep -q "svrnty Identity:" || { echo "FAIL: svrnty section missing"; exit 1; }
 echo "  OK"
 
 echo "[8/10] cairn init --editor cursor..."
