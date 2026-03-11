@@ -227,6 +227,22 @@ def open_session(agent: str = "default") -> str:
     except Exception as e:
         log.warning("Journal chain verification failed: %s", e)
 
+    # Auth gate — the firing pin (PQ identity check)
+    auth_msg = ""
+    try:
+        from cairn_ai.pq_identity import auth_gate
+        gate = auth_gate(agent, get_persist_dir())
+        mode = gate["mode"].value
+        auth_msg = f"\n\nIDENTITY: {mode.upper()} — {gate['reason']}"
+        if gate.get("agent_fingerprint"):
+            auth_msg += f"\n  PQ fingerprint: {gate['agent_fingerprint']}"
+        if gate.get("principal_fingerprint"):
+            auth_msg += f"\n  Principal: {gate['principal_fingerprint']}"
+    except ImportError:
+        pass  # pqcrypto not installed — sovereign features optional
+    except Exception as e:
+        log.debug("Auth gate check skipped: %s", e)
+
     # Check backup status
     backup_msg = ""
     try:
@@ -244,6 +260,8 @@ def open_session(agent: str = "default") -> str:
     result = f"Session opened for {agent} at {now[:16]} | Glyph: {glyph_num}"
     if warning:
         result += f"\n\nWARNING: {warning}"
+    if auth_msg:
+        result += auth_msg
     if integrity_msg:
         result += integrity_msg
     if chain_msg:

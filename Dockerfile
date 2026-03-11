@@ -12,7 +12,7 @@
 #   docker run -i -v cairn-data:/agent/.persist cairn-ai:sovereign serve
 #
 # Initialize sovereign identity:
-#   docker run -v cairn-data:/agent/.persist cairn-ai:sovereign init --sovereign --mode tool --dir /agent/.persist
+#   docker run -v cairn-data:/agent/.persist cairn-ai:sovereign init --svrnty --mode tool --dir /agent/.persist
 
 FROM python:3.12-alpine AS base
 
@@ -22,7 +22,7 @@ WORKDIR /agent
 
 # Install cairn with sovereign extras
 COPY . /opt/cairn-ai/
-RUN pip install --no-cache-dir "/opt/cairn-ai[sovereign]"
+RUN pip install --no-cache-dir "/opt/cairn-ai[svrnty]"
 
 # .persist lives in a named volume — isolated from host
 VOLUME /agent/.persist

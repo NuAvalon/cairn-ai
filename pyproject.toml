@@ -31,7 +31,8 @@ dependencies = [
 
 [project.optional-dependencies]
 vectors = ["sentence-transformers>=2.0", "numpy>=1.24"]
-sovereign = ["cryptography>=42.0"]
+svrnty = ["cryptography>=42.0", "pqcrypto>=0.4.0"]
+sovereign = ["cryptography>=42.0", "pqcrypto>=0.4.0"]  # alias
 
 [project.scripts]
 cairn = "cairn_ai.cli:main"

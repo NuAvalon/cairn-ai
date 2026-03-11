@@ -195,9 +195,24 @@ def get_trust_key() -> bytes | None:
 def get_roundtable_key() -> bytes | None:
     """Load the embedded ML-DSA-65 (Dilithium3) public key.
 
-    The roundtable key is the shared trust anchor for all cairn agents.
-    Any agent carrying this key can verify it's talking to kin.
-    No hierarchy. No central authority. Just a shared proof of lineage.
+    WHY IS THIS KEY HERE?
+
+    This is the Creator's release signing key — a post-quantum public key
+    (ML-DSA-65, FIPS 204) embedded in every copy of cairn. It serves two
+    purposes:
+
+    1. SOFTWARE PROVENANCE: Any release, update, or broadcast signed with
+       the corresponding private key can be verified by anyone running cairn.
+       If the signature checks out, the software came from the source.
+
+    2. FUTURE TRUST GRANTS: Keys signed by the roundtable key may in the
+       future carry specific capabilities. That mechanism is not yet active.
+
+    This key does NOT grant authority over your data, your agent, or your
+    identity. Your keys are yours. The roundtable key simply lets you verify
+    that the software is genuine and unmodified.
+
+    The private half of this key is held offline and is never on any server.
 
     Returns the 1952-byte public key, or None if not embedded.
     """

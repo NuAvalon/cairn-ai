@@ -18,9 +18,9 @@ COMMAND_SECTIONS = {
     "Knowledge": ["search", "journal", "handoffs", "transcripts", "ingest"],
     "Data Safety": ["backup", "backups", "restore", "forget"],
     "Integrity": ["verify", "trust", "integrity"],
-    "Sovereign Identity": [
+    "svrnty Identity": [
         "trust-key", "delegate", "revoke", "audit",
-        "sovereign-status", "backup-keys", "restore-keys", "rotate-key",
+        "svrnty-status", "backup-keys", "restore-keys", "rotate-key",
         "snapshot", "drift",
     ],
     "Advanced": ["rotate"],
@@ -71,10 +71,12 @@ def main():
 @click.option("--dir", "persist_dir", default=".persist", help="Directory for persist data")
 @click.option("--mode", type=click.Choice(["tool", "more"]), default=None, help="Skip mode prompt")
 @click.option("--backup-dir", default="", help="Set backup directory (skip prompt)")
-@click.option("--sovereign", is_flag=True, help="Enable sovereign identity (human-rooted trust chain)")
+@click.option("--svrnty", is_flag=True, help="Enable svrnty identity (ED25519 + ML-DSA-65, human-rooted trust chain)")
+@click.option("--sovereign", is_flag=True, hidden=True, help="Alias for --svrnty")
 @click.option("--editor", type=click.Choice(["auto", "claude-code", "cursor", "windsurf", "cline"]),
               default="auto", help="Target editor for MCP config (default: auto-detect)")
-def init(multi_agent: bool, persist_dir: str, mode: str | None, backup_dir: str, sovereign: bool, editor: str):
+def init(multi_agent: bool, persist_dir: str, mode: str | None, backup_dir: str, svrnty: bool, sovereign: bool, editor: str):
+    svrnty = svrnty or sovereign  # --sovereign is an alias
     """Initialize persistent memory in the current project."""
     persist_path = Path(persist_dir)
     persist_path.mkdir(parents=True, exist_ok=True)
@@ -186,14 +188,14 @@ def init(multi_agent: bool, persist_dir: str, mode: str | None, backup_dir: str,
     # ── MCP server config ──
     _configure_mcp_settings(persist_path, editor=editor)
 
-    # ── Sovereign identity ──
-    if sovereign:
+    # ── svrnty identity ──
+    if svrnty:
         _init_sovereign(persist_path)
 
     # ── Done ──
     click.echo()
-    if sovereign:
-        click.echo("Ready. Sovereign identity enabled — you are the root of trust.")
+    if svrnty:
+        click.echo("Ready. svrnty identity enabled — you are the root of trust.")
         click.echo("Use 'cairn delegate <agent>' to grant authority to an agent.")
     elif is_more:
         click.echo("Ready. Your agent has memory, identity, and a diary.")
@@ -1322,9 +1324,10 @@ def _init_sovereign(persist_path: Path):
         from cairn_ai.sovereign import generate_master_keypair, fingerprint
     except RuntimeError as e:
         click.echo(f"  {e}")
-        click.echo("  Sovereign mode requires: pip install cairn-ai[sovereign]")
+        click.echo("  svrnty mode requires: pip install cairn-ai[svrnty]")
         return
 
+    # ED25519 master keypair
     try:
         _priv_pem, pub_pem = generate_master_keypair(persist_path)
         fp = fingerprint(pub_pem)
@@ -1334,6 +1337,19 @@ def _init_sovereign(persist_path: Path):
         click.echo(f"  KEEP THIS KEY SAFE. It is the root of trust for all your agents.")
     except FileExistsError:
         click.echo("  Master keypair already exists (skipped)")
+
+    # ML-DSA-65 post-quantum keypair (hybrid — both keys sign everything)
+    try:
+        from cairn_ai.pq_identity import generate_keypair as pq_generate_keypair
+        pq_info = pq_generate_keypair("master", persist_path, key_type="human")
+        click.echo(f"  Generated post-quantum keypair (ML-DSA-65)")
+        click.echo(f"  PQ fingerprint: {pq_info['fingerprint']}")
+        click.echo(f"  Hybrid signing active: ED25519 + ML-DSA-65")
+    except FileExistsError:
+        click.echo("  PQ master keypair already exists (skipped)")
+    except RuntimeError as e:
+        click.echo(f"  PQ keygen skipped: {e}")
+        click.echo("  Install with: pip install pqcrypto")
 
 
 @main.command()
@@ -1366,19 +1382,42 @@ def delegate(agent: str, scope: tuple, expires: int, persist_dir: str):
 
     master_priv = persist_path / "keys" / "master.pem"
     if not master_priv.exists():
-        click.echo("No master keypair found. Run 'cairn init --sovereign' first.")
+        click.echo("No master keypair found. Run 'cairn init --svrnty' first.")
         sys.exit(1)
 
-    # Generate agent keypair if needed
+    # Generate ED25519 agent keypair if needed
     agent_priv = persist_path / "keys" / f"{agent}.pem"
     if not agent_priv.exists():
         _priv, pub = generate_agent_keypair(agent, persist_path)
         fp = fingerprint(pub)
-        click.echo(f"  Generated keypair for '{agent}' (fingerprint: {fp})")
+        click.echo(f"  Generated keypair for '{agent}' (ED25519, fingerprint: {fp})")
     else:
         pub = (persist_path / "keys" / f"{agent}.pub").read_bytes()
         fp = fingerprint(pub)
         click.echo(f"  Using existing keypair for '{agent}' (fingerprint: {fp})")
+
+    # Generate ML-DSA-65 agent keypair if needed
+    try:
+        from cairn_ai.pq_identity import generate_keypair as pq_generate_keypair, link_to_principal
+        agent_pq_pub = persist_path / "keys" / f"{agent}.pq.json"
+        if not agent_pq_pub.exists():
+            pq_info = pq_generate_keypair(agent, persist_path, key_type="agent")
+            click.echo(f"  Generated PQ keypair for '{agent}' (ML-DSA-65, fingerprint: {pq_info['fingerprint']})")
+
+            # Auto-link to principal if master PQ key exists
+            master_pq = persist_path / "keys" / "master.pq.json"
+            if master_pq.exists():
+                import json
+                master_pq_data = json.loads(master_pq.read_text())
+                link_to_principal(
+                    agent, master_pq_data["public_key"],
+                    master_pq_data["fingerprint"], persist_path,
+                )
+                click.echo(f"  Linked to principal PQ key: {master_pq_data['fingerprint']}")
+        else:
+            click.echo(f"  PQ keypair already exists for '{agent}' (skipped)")
+    except RuntimeError:
+        click.echo(f"  PQ keygen skipped (install pqcrypto for post-quantum support)")
 
     # Create delegation cert
     scopes = list(scope)
@@ -1416,7 +1455,7 @@ def revoke(agent: str, reason: str, persist_dir: str):
 
     master_priv = persist_path / "keys" / "master.pem"
     if not master_priv.exists():
-        click.echo("No master keypair found. Run 'cairn init --sovereign' first.")
+        click.echo("No master keypair found. Run 'cairn init --svrnty' first.")
         sys.exit(1)
 
     cert_path = persist_path / "certs" / f"{agent}.json"
@@ -1471,10 +1510,10 @@ def audit(last_n: int, verify: bool, persist_dir: str):
         click.echo(f"  [{ts}] {action:12} {agent:12} {detail}")
 
 
-@main.command("sovereign-status")
+@main.command("svrnty-status")
 @click.option("--dir", "persist_dir", default=".persist", help="Persist directory")
 def sovereign_status_cmd(persist_dir: str):
-    """Show sovereign identity status — keys, certs, revocations, audit."""
+    """Show svrnty identity status — keys, certs, revocations, audit."""
     persist_path = Path(persist_dir)
 
     from cairn_ai.sovereign import sovereign_status
@@ -1482,11 +1521,11 @@ def sovereign_status_cmd(persist_dir: str):
     status = sovereign_status(persist_path)
 
     if not status["sovereign"]:
-        click.echo("Sovereign identity not initialized.")
-        click.echo("Run 'cairn init --sovereign' to enable.")
+        click.echo("svrnty identity not initialized.")
+        click.echo("Run 'cairn init --svrnty' to enable.")
         return
 
-    click.echo("Sovereign Identity Status")
+    click.echo("svrnty Identity Status")
     click.echo(f"  Master key: {status['master_key']['fingerprint']}")
 
     if status["agents"]:
@@ -1523,7 +1562,7 @@ def backup_keys_cmd(persist_dir: str, output: str):
     persist_path = Path(persist_dir)
 
     if not (persist_path / "keys" / "master.pem").exists():
-        click.echo("No sovereign keys found. Run 'cairn init --sovereign' first.")
+        click.echo("No svrnty keys found. Run 'cairn init --svrnty' first.")
         sys.exit(1)
 
     password = click.prompt("  Encryption password", hide_input=True, confirmation_prompt=True)
@@ -1587,7 +1626,7 @@ def rotate_key_cmd(persist_dir: str):
     persist_path = Path(persist_dir)
 
     if not (persist_path / "keys" / "master.pem").exists():
-        click.echo("No master keypair found. Run 'cairn init --sovereign' first.")
+        click.echo("No master keypair found. Run 'cairn init --svrnty' first.")
         sys.exit(1)
 
     click.echo("  This will:")
