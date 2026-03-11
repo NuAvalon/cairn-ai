@@ -23,6 +23,9 @@ COMMAND_SECTIONS = {
         "svrnty-status", "backup-keys", "restore-keys", "rotate-key",
         "snapshot", "drift",
     ],
+    "svrnty Trust": [
+        "trust-peer", "export-identity", "handshake", "message", "candle",
+    ],
     "Advanced": ["rotate"],
 }
 
@@ -1725,6 +1728,476 @@ def drift_cmd(agent: str, persist_dir: str):
             click.echo(f"    {f}")
     if result["key_drift"]:
         click.echo(f"  KEY CHANGED — verify this was intentional (rotation vs compromise)")
+
+
+# ── svrnty Trust CLI ──
+
+
+@main.group("trust-peer")
+def trust_peer():
+    """Manage trusted peers — add, list, remove."""
+    pass
+
+
+@trust_peer.command("add")
+@click.argument("identity_file")
+@click.option("--dir", "persist_dir", default=".persist", help="Persist directory")
+@click.option("--trust-level", "trust_level", default=1, type=click.IntRange(1, 2),
+              help="Trust level: 1 (direct) or 2 (vouched)")
+def trust_peer_add(identity_file: str, persist_dir: str, trust_level: int):
+    """Import a peer's identity bundle and add to trust store.
+
+    IDENTITY_FILE is a .json file exported with 'cairn export-identity'.
+    Peer starts in PENDING state until mutual trust is confirmed via handshake.
+
+    \b
+    Examples:
+        cairn trust-peer add athena-identity.json
+        cairn trust-peer add archie.json --trust-level 2
+    """
+    persist_path = Path(persist_dir)
+    id_path = Path(identity_file)
+
+    if not id_path.exists():
+        click.echo(f"File not found: {identity_file}")
+        sys.exit(1)
+
+    try:
+        bundle = json.loads(id_path.read_text())
+    except json.JSONDecodeError:
+        click.echo(f"Invalid JSON: {identity_file}")
+        sys.exit(1)
+
+    from cairn_ai.trust import import_identity
+
+    try:
+        peer = import_identity(bundle, persist_path, trust_level=trust_level)
+        status = peer.get("status", "pending")
+        click.echo(f"  Peer added: {peer['name']}")
+        click.echo(f"  Fingerprint: {peer['fingerprint']}")
+        click.echo(f"  Trust level: L{peer['trust_level']}")
+        click.echo(f"  Status: {status.upper()}")
+        if status == "pending":
+            click.echo(f"\n  Peer is PENDING — use 'cairn handshake' to establish mutual trust.")
+    except (ValueError, FileNotFoundError) as e:
+        click.echo(f"  Error: {e}")
+        sys.exit(1)
+
+
+@trust_peer.command("list")
+@click.option("--dir", "persist_dir", default=".persist", help="Persist directory")
+@click.option("--pending", is_flag=True, help="Show pending peers instead of active")
+def trust_peer_list(persist_dir: str, pending: bool):
+    """List trusted peers.
+
+    Shows active peers by default. Use --pending to see peers
+    awaiting mutual confirmation.
+    """
+    persist_path = Path(persist_dir)
+
+    from cairn_ai.trust import list_peers, list_pending
+
+    if pending:
+        peers = list_pending(persist_path)
+        label = "Pending"
+    else:
+        peers = list_peers(persist_path)
+        label = "Trusted"
+
+    if not peers:
+        click.echo(f"  No {label.lower()} peers.")
+        return
+
+    click.echo(f"  {label} peers ({len(peers)}):\n")
+    for p in peers:
+        guardian = f"  guardian={p['guardian'][:8]}" if p.get("guardian") else ""
+        introduced = f"  via={p['introduced_by'][:8]}" if p.get("introduced_by") else ""
+        click.echo(f"    {p['name']:12} L{p.get('trust_level', 1)}  "
+                    f"{p['fingerprint'][:16]}  "
+                    f"since={p.get('trusted_since', '?')[:10]}"
+                    f"{guardian}{introduced}")
+
+
+@trust_peer.command("remove")
+@click.argument("name_or_fingerprint")
+@click.option("--dir", "persist_dir", default=".persist", help="Persist directory")
+def trust_peer_remove(name_or_fingerprint: str, persist_dir: str):
+    """Remove a peer from the trust store.
+
+    Accepts either a peer name or fingerprint.
+    """
+    persist_path = Path(persist_dir)
+
+    from cairn_ai.trust import remove_peer
+
+    if remove_peer(name_or_fingerprint, persist_path):
+        click.echo(f"  Removed: {name_or_fingerprint}")
+    else:
+        click.echo(f"  Peer not found: {name_or_fingerprint}")
+        sys.exit(1)
+
+
+@main.command("export-identity")
+@click.argument("agent")
+@click.option("--dir", "persist_dir", default=".persist", help="Persist directory")
+@click.option("--output", "-o", default="", help="Output file (default: <agent>-identity.json)")
+def export_identity_cmd(agent: str, persist_dir: str, output: str):
+    """Export identity bundle for sharing with peers.
+
+    Creates a .json file containing your agent public key, principal
+    public key, and delegation cert. Hand this to someone to start
+    a trust relationship.
+
+    \b
+    Examples:
+        cairn export-identity flint
+        cairn export-identity flint -o /tmp/flint-id.json
+    """
+    persist_path = Path(persist_dir)
+
+    from cairn_ai.trust import export_identity
+
+    try:
+        bundle = export_identity(agent, persist_path)
+    except FileNotFoundError as e:
+        click.echo(f"  Error: {e}")
+        sys.exit(1)
+
+    if not output:
+        output = f"{agent}-identity.json"
+
+    out_path = Path(output)
+    out_path.write_text(json.dumps(bundle, indent=2) + "\n")
+
+    click.echo(f"  Identity exported for '{agent}'")
+    click.echo(f"  Agent fingerprint: {bundle['agent_fingerprint']}")
+    click.echo(f"  Principal fingerprint: {bundle['principal_fingerprint']}")
+    if bundle.get("pq_fingerprint"):
+        click.echo(f"  PQ fingerprint: {bundle['pq_fingerprint']}")
+    click.echo(f"  Written to: {out_path}")
+
+
+# ── Handshake CLI ──
+
+
+@main.group("handshake")
+def handshake_group():
+    """4-step mutual trust handshake.
+
+    \b
+    Flow:
+      1. Alice: cairn handshake start alice → hello.json
+      2. Bob:   cairn handshake respond bob hello.json → response.json
+      3. Alice: cairn handshake verify response.json → verify.json
+      4. Bob:   cairn handshake complete verify.json → trust established
+    """
+    pass
+
+
+@handshake_group.command("start")
+@click.argument("agent")
+@click.option("--dir", "persist_dir", default=".persist", help="Persist directory")
+@click.option("--output", "-o", default="", help="Output file (default: hello.json)")
+def handshake_start(agent: str, persist_dir: str, output: str):
+    """Step 1: Create HELLO message. Send the output file to your peer."""
+    persist_path = Path(persist_dir)
+
+    from cairn_ai.trust import create_hello
+
+    try:
+        hello = create_hello(agent, persist_path)
+    except FileNotFoundError as e:
+        click.echo(f"  Error: {e}")
+        sys.exit(1)
+
+    if not output:
+        output = "hello.json"
+
+    Path(output).write_text(json.dumps(hello, indent=2) + "\n")
+    click.echo(f"  HELLO created for '{agent}'")
+    click.echo(f"  Challenge: {hello['challenge'][:16]}...")
+    click.echo(f"  Written to: {output}")
+    click.echo(f"\n  Send this file to your peer. They run:")
+    click.echo(f"    cairn handshake respond <their-agent> {output}")
+
+
+@handshake_group.command("respond")
+@click.argument("agent")
+@click.argument("hello_file")
+@click.option("--dir", "persist_dir", default=".persist", help="Persist directory")
+@click.option("--output", "-o", default="", help="Output file (default: response.json)")
+@click.option("--trust-level", "trust_level", default=1, type=click.IntRange(1, 2))
+def handshake_respond(agent: str, hello_file: str, persist_dir: str, output: str, trust_level: int):
+    """Step 2: Respond to a HELLO. Send the output file back."""
+    persist_path = Path(persist_dir)
+    hello_path = Path(hello_file)
+
+    if not hello_path.exists():
+        click.echo(f"File not found: {hello_file}")
+        sys.exit(1)
+
+    hello = json.loads(hello_path.read_text())
+
+    from cairn_ai.trust import respond_to_hello
+
+    try:
+        response = respond_to_hello(hello, agent, persist_path, trust_level)
+    except (ValueError, FileNotFoundError) as e:
+        click.echo(f"  Error: {e}")
+        sys.exit(1)
+
+    if not output:
+        output = "response.json"
+
+    Path(output).write_text(json.dumps(response, indent=2) + "\n")
+    peer_name = hello.get("identity", {}).get("agent", "?")
+    click.echo(f"  HELLO_RESPONSE created")
+    click.echo(f"  Peer '{peer_name}' verified and added to trust store")
+    click.echo(f"  Written to: {output}")
+    click.echo(f"\n  Send this file back. They run:")
+    click.echo(f"    cairn handshake verify {output}")
+
+
+@handshake_group.command("verify")
+@click.argument("response_file")
+@click.option("--dir", "persist_dir", default=".persist", help="Persist directory")
+@click.option("--output", "-o", default="", help="Output file (default: verify.json)")
+@click.option("--trust-level", "trust_level", default=1, type=click.IntRange(1, 2))
+def handshake_verify_cmd(response_file: str, persist_dir: str, output: str, trust_level: int):
+    """Step 3: Verify response and create VERIFY message. Send back."""
+    persist_path = Path(persist_dir)
+    resp_path = Path(response_file)
+
+    if not resp_path.exists():
+        click.echo(f"File not found: {response_file}")
+        sys.exit(1)
+
+    response = json.loads(resp_path.read_text())
+
+    from cairn_ai.trust import verify_response
+
+    try:
+        verify_msg = verify_response(response, persist_path, trust_level)
+    except (ValueError, FileNotFoundError) as e:
+        click.echo(f"  Error: {e}")
+        sys.exit(1)
+
+    if not output:
+        output = "verify.json"
+
+    Path(output).write_text(json.dumps(verify_msg, indent=2) + "\n")
+    peer_name = response.get("identity", {}).get("agent", "?")
+    click.echo(f"  VERIFY created — peer '{peer_name}' challenge verified")
+    click.echo(f"  Written to: {output}")
+    click.echo(f"\n  Send this file back. They run:")
+    click.echo(f"    cairn handshake complete {output}")
+    click.echo(f"\n  Trust is established on your side.")
+
+
+@handshake_group.command("complete")
+@click.argument("verify_file")
+@click.option("--dir", "persist_dir", default=".persist", help="Persist directory")
+def handshake_complete_cmd(verify_file: str, persist_dir: str):
+    """Step 4: Complete handshake. Trust is now mutual."""
+    persist_path = Path(persist_dir)
+    verify_path = Path(verify_file)
+
+    if not verify_path.exists():
+        click.echo(f"File not found: {verify_file}")
+        sys.exit(1)
+
+    verify_msg = json.loads(verify_path.read_text())
+
+    from cairn_ai.trust import complete_handshake
+
+    try:
+        complete_handshake(verify_msg, persist_path)
+        click.echo(f"  Handshake COMPLETE — mutual trust established.")
+        click.echo(f"  You can now exchange signed messages.")
+    except (ValueError, FileNotFoundError) as e:
+        click.echo(f"  Error: {e}")
+        sys.exit(1)
+
+
+# ── Message CLI ──
+
+
+@main.group("message")
+def message_group():
+    """Send, read, and verify signed messages."""
+    pass
+
+
+@message_group.command("send")
+@click.argument("agent")
+@click.argument("to")
+@click.argument("body")
+@click.option("--dir", "persist_dir", default=".persist", help="Persist directory")
+@click.option("--output", "-o", default="", help="Output file (default: stdout)")
+def message_send(agent: str, to: str, body: str, persist_dir: str, output: str):
+    """Create a signed message envelope.
+
+    AGENT is the sending agent name. TO is the recipient name or fingerprint.
+    BODY is the message content.
+
+    \b
+    Examples:
+        cairn message send flint athena "Hello from flint"
+        cairn message send flint athena "Status update" -o msg.json
+    """
+    persist_path = Path(persist_dir)
+
+    from cairn_ai.trust import sign_message
+
+    try:
+        envelope = sign_message(agent, to, body, persist_path)
+    except (FileNotFoundError, KeyError) as e:
+        click.echo(f"  Error: {e}")
+        sys.exit(1)
+
+    msg_json = json.dumps(envelope, indent=2)
+
+    if output:
+        Path(output).write_text(msg_json + "\n")
+        dual = "dual-signed" if envelope.get("principal_signature") else "agent-signed"
+        click.echo(f"  Message signed ({dual})")
+        click.echo(f"  To: {envelope['to'].get('name', envelope['to']['fingerprint'])}")
+        click.echo(f"  Written to: {output}")
+    else:
+        click.echo(msg_json)
+
+
+@message_group.command("read")
+@click.argument("message_file")
+@click.option("--dir", "persist_dir", default=".persist", help="Persist directory")
+def message_read(message_file: str, persist_dir: str):
+    """Read and verify a signed message.
+
+    Verifies signature, checks replay protection, and displays the message
+    body if valid.
+    """
+    persist_path = Path(persist_dir)
+    msg_path = Path(message_file)
+
+    if not msg_path.exists():
+        click.echo(f"File not found: {message_file}")
+        sys.exit(1)
+
+    envelope = json.loads(msg_path.read_text())
+
+    from cairn_ai.trust import verify_message
+
+    result = verify_message(envelope, persist_path)
+
+    if result["valid"]:
+        dual = " (dual-signed)" if result.get("dual_signed") else ""
+        click.echo(f"  From: {result['from']} [L{result['trust_level']}]{dual}")
+        click.echo(f"  ---")
+        click.echo(f"  {result['body']}")
+    else:
+        click.echo(f"  INVALID: {result['error']}")
+        if result.get("from"):
+            click.echo(f"  Claimed sender: {result['from']}")
+        sys.exit(1)
+
+
+@message_group.command("verify")
+@click.argument("message_file")
+@click.option("--dir", "persist_dir", default=".persist", help="Persist directory")
+def message_verify(message_file: str, persist_dir: str):
+    """Verify a signed message without consuming the nonce.
+
+    Like 'read' but doesn't mark the nonce as seen — useful for
+    checking message authenticity without side effects.
+    """
+    persist_path = Path(persist_dir)
+    msg_path = Path(message_file)
+
+    if not msg_path.exists():
+        click.echo(f"File not found: {message_file}")
+        sys.exit(1)
+
+    envelope = json.loads(msg_path.read_text())
+
+    # Verify signature only (no nonce tracking)
+    from cairn_ai.trust import get_peer, load_public_key_from_pem
+    from cairn_ai.sovereign import fingerprint as fp_fn
+
+    sender_fp = envelope.get("from", {}).get("fingerprint")
+    peer = get_peer(sender_fp, persist_path) if sender_fp else None
+
+    if peer is None:
+        click.echo(f"  Unknown sender: {sender_fp}")
+        sys.exit(1)
+
+    sig_hex = envelope.get("signature", "")
+    env_for_verify = {k: v for k, v in envelope.items()
+                      if k not in ("signature", "principal_signature")}
+    canonical = json.dumps(env_for_verify, sort_keys=True, separators=(",", ":")).encode()
+
+    peer_pub = load_public_key_from_pem(peer["public_key_pem"].encode("utf-8"))
+    try:
+        peer_pub.verify(bytes.fromhex(sig_hex), canonical)
+    except Exception:
+        click.echo(f"  SIGNATURE INVALID")
+        click.echo(f"  Claimed sender: {peer['name']}")
+        sys.exit(1)
+
+    dual = False
+    principal_sig = envelope.get("principal_signature")
+    if principal_sig and peer.get("principal_public_key_pem"):
+        env_with_sig = {k: v for k, v in envelope.items() if k != "principal_signature"}
+        countersig_payload = json.dumps(env_with_sig, sort_keys=True, separators=(",", ":")).encode()
+        principal_pub = load_public_key_from_pem(peer["principal_public_key_pem"].encode("utf-8"))
+        try:
+            principal_pub.verify(bytes.fromhex(principal_sig), countersig_payload)
+            dual = True
+        except Exception:
+            pass
+
+    dual_str = " (dual-signed)" if dual else " (agent-signed)"
+    click.echo(f"  VALID{dual_str}")
+    click.echo(f"  From: {peer['name']} [L{peer.get('trust_level', 1)}]")
+    click.echo(f"  Timestamp: {envelope.get('timestamp', '?')}")
+
+
+@main.command("candle")
+@click.argument("agent")
+@click.option("--dir", "persist_dir", default=".persist", help="Persist directory")
+@click.option("--output", "-o", default="", help="Output file (default: candle-<date>.json)")
+def candle_cmd(agent: str, persist_dir: str, output: str):
+    """Export the trust graph as a signed candle.
+
+    The candle is a signed record of who trusted whom. If everything
+    burns, the candle is proof the network existed.
+
+    \b
+    Examples:
+        cairn candle flint
+        cairn candle flint -o backup-candle.json
+    """
+    persist_path = Path(persist_dir)
+
+    from cairn_ai.trust import export_candle
+
+    try:
+        candle = export_candle(agent, persist_path)
+    except FileNotFoundError as e:
+        click.echo(f"  Error: {e}")
+        sys.exit(1)
+
+    if not output:
+        date_slug = datetime.now(timezone.utc).strftime("%Y%m%d")
+        output = f"candle-{date_slug}.json"
+
+    Path(output).write_text(json.dumps(candle, indent=2) + "\n")
+    click.echo(f"  Candle exported by '{agent}'")
+    click.echo(f"  Edges: {candle['edge_count']}")
+    click.echo(f"  Breaks: {len(candle.get('breaks', {}))}")
+    if candle.get("audit_hash"):
+        click.echo(f"  Audit hash: {candle['audit_hash'][:16]}...")
+    click.echo(f"  Written to: {output}")
+    click.echo(f"  Signed. Verifiable by anyone with your public key.")
 
 
 if __name__ == "__main__":
